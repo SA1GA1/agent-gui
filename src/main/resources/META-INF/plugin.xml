@@ -1,0 +1,10 @@
+<idea-plugin>
+    <id>dev.agentgui</id>
+    <name>Agent GUI</name>
+    <vendor url="https://github.com/SA1GA1/agent-gui">SA1GA1</vendor>
+    <description><![CDATA[A local Codex chat for Android Studio. Uses your installed Codex CLI and account.]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Agent GUI" anchor="right" factoryClass="dev.agentgui.toolwindow.CodexToolWindowFactory" icon="/icons/agent.svg"/>
+    </extensions>
+</idea-plugin>

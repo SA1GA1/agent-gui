@@ -1,0 +1,9 @@
+.gradle/
+.intellijPlatform/
+.idea/
+*.iml
+build/
+webview/node_modules/
+webview/dist/
+.superpowers/
+.DS_Store
