@@ -11,7 +11,7 @@ class CodexProcess(
     onRequest: (JsonObject) -> Unit,
     private val onExit: (String) -> Unit,
 ) : AutoCloseable {
-    private val process = ProcessBuilder(binary, "app-server", "--listen", "stdio://")
+    private val process = ProcessBuilder(binary, "-c", "model_provider=\"openai\"", "app-server", "--listen", "stdio://")
         .directory(Path.of(cwd).toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start()
     private val writer = process.outputStream.bufferedWriter(Charsets.UTF_8)
     val rpc = JsonRpcClient({ line -> synchronized(writer) { writer.write(line); writer.newLine(); writer.flush() } }, onEvent, onRequest)
