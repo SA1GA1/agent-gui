@@ -41,7 +41,7 @@ class CodexToolWindowFactory : ToolWindowFactory {
         }, browser.cefBrowser)
         val nonce = UUID.randomUUID().toString()
         val loader = javaClass.classLoader
-        fun resource(name: String): String = loader.getResourceAsStream("webview/$name")?.bufferedReader()?.use { it.readText() } ?: error("Не найден webview/$name; пересоберите плагин")
+        fun resource(name: String): String = loader.getResourceAsStream("webview/$name")?.bufferedReader()?.use { it.readText() } ?: error("Missing webview/$name; rebuild the plugin")
         val js = resource("app.js").replace("</script", "<\\/script", ignoreCase = true)
         val css = resource("style.css").replace("</style", "<\\/style", ignoreCase = true)
         val background = if (JBColor.isBright()) "#f6f7f9" else "#1e1f22"

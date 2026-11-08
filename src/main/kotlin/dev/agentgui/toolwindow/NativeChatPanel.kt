@@ -5,9 +5,10 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
-import com.intellij.ui.JBColor
+import com.intellij.openapi.ui.popup.JBPopup
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.*
-import com.intellij.util.ui.JBUI
 import dev.agentgui.codex.*
 import dev.agentgui.sessions.SessionService
 import kotlinx.serialization.json.*
@@ -20,288 +21,383 @@ import java.io.File
 import java.util.Base64
 import javax.imageio.ImageIO
 import javax.swing.*
+import javax.swing.border.EmptyBorder
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-/** Lightweight UI: no Chromium, HTTP server, extra agent process or project index. */
-class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
-    private val service = project.service<SessionService>()
-    private val tabs = JComboBox<Choice>()
-    private val model = JComboBox<Choice>()
-    private val effort = JComboBox<String>()
-    private val skill = JComboBox<Choice>()
-    private val input = JBTextArea(4, 25)
-    private val transcript = JEditorPane("text/html", "").apply { isEditable = false; putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true) }
-    private val scroll = JBScrollPane(transcript)
-    private val status = JBLabel("Подключите установленный Codex CLI")
-    private val context = JBLabel("Контекст: нет данных")
-    private val branch = JBLabel("")
-    private val files = JPanel(FlowLayout(FlowLayout.LEFT, 3, 0))
-    private val notices = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
-    private val approval = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
-    private val send = JButton("Отправить")
-    private val stop = JButton("Стоп")
-    private val compact = JButton("/compact")
-    private var draftThread = ""
-    private var draftText = ""
-    private val drafts = Timer(250) { dispatch("draft", "threadId" to JsonPrimitive(draftThread), "text" to JsonPrimitive(draftText)) }.apply { isRepeats = false }
-    private var updating = false
-    private var disposed = false
-    private var state = obj {}
-    private var activeId = ""
-    private var rendered = ""
-    private var visibleItems = 60
-    private var latestDraft = ""
-    private var pendingFileRequest: String? = null
-    private var pendingHistory = false
-    private var controlsSignature = ""
-    private var filesSignature = ""
-    private var incoming: JsonObject? = null
-    private val updates = Timer(120) { incoming?.let { incoming = null; applyState(it) } }.apply { start() }
-    private var quotaDialog: JDialog? = null
-    private val quota = JButton("5 ч: нет данных").apply { addActionListener { quotaPopup() } }
-    private data class Choice(val id: String, val label: String) { override fun toString() = label }
-    private val sink: (JsonObject) -> Unit = { value -> ApplicationManager.getApplication().invokeLater {
-        if (!disposed) when (value.string("type")) {
-            "state" -> incoming = value
-            "files" -> if (value.string("requestId") == pendingFileRequest) showFiles(value)
-            "historyResult" -> if (pendingHistory) showHistory(value)
+/** Native controls, bounded transcript and batched updates; no browser process or project index. */
+class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)), Disposable {
+    private val service=project.service<SessionService>()
+    private val tabs=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
+    private val input=ComposerTextArea()
+    private val transcript=NativeTranscript()
+    private lateinit var inputScroll: JBScrollPane
+    private val inputResize=Timer(30) { resizeComposer() }.apply { isRepeats=false }
+    private val scroll=JBScrollPane(transcript).apply { border=EmptyBorder(0,0,0,0); viewport.background=CHAT_BG; subtleScrollbars() }
+    private val notices=vertical()
+    private val approval=vertical()
+    private val files=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
+    private val selections=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
+    private val bottom=transparentPanel()
+    private val connectedBottom=vertical()
+    private val model=flatButton("Model ▾") { modelPopup() }
+    private val context=JBLabel("Context —").apply { foreground=CHAT_MUTED; font=font.deriveFont(11f) }
+    private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,20)) { quotaPopup() }
+    private val history=flatButton("History",icon=ChatIcon("history",CHAT_FG,22),tooltip="Prompt history") { promptHistory() }
+    private val send=SendButton { if(busy()) dispatch("stop") else submit() }
+    private val connect=flatButton("Connect Codex") { dispatch("connect","binary" to JsonPrimitive(state.string("binary").orEmpty())) }
+    private var state=obj {}
+    private var activeId=""
+    private var incoming: JsonObject?=null
+    private var disposed=false
+    private var updating=false
+    private var latestDraft=""
+    private var draftThread=""
+    private var draftText=""
+    private var rendered=""
+    private var controlsSignature=""
+    private var noticesSignature=""
+    private var filesSignature=""
+    private var approvalsSignature=""
+    private var bottomMode=""
+    private val animatedNotices=linkedSetOf<String>()
+    private var selectedSkill: String?=null
+    private var selectedPlugin: JsonObject?=null
+    private var popup: JBPopup?=null
+    private var completionPopup: JBPopup?=null
+    private val completionOpen get()=completionPopup?.isVisible==true
+    private var quotaSignature=""
+    private var completionList: JList<Suggestion>?=null
+    private var pendingFileRequest: String?=null
+    private var pendingPromptRequest: String?=null
+    private var pendingReveal: String?=null
+    private var completionToken: ChatPresentation.Token?=null
+    private var completionFiles=emptyList<String>()
+    private var historyPrompts=emptyList<Pair<String,String>>()
+    private var historyQuery: JTextField?=null
+    private var historyList: JList<Prompt>?=null
+    private val drafts=Timer(250) { dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText)) }.apply { isRepeats=false }
+    private val autocomplete=Timer(180) { complete() }.apply { isRepeats=false }
+    private val updates=Timer(80) { incoming?.let { incoming=null; applyState(it) } }.apply { isRepeats=false }
+    private data class Prompt(val id: String,val text: String) { override fun toString()=text.replace('\n',' ').take(130) }
+    private data class Suggestion(val title: String,val detail: String,val action: () -> Unit) { override fun toString()=title }
+    private fun vertical()=transparentPanel().apply { layout=BoxLayout(this,BoxLayout.Y_AXIS) }
+    private val sink: (JsonObject)->Unit = { value -> ApplicationManager.getApplication().invokeLater {
+        if(!disposed) when(value.string("type")) {
+            "state" -> { incoming=value; if(!updates.isRunning) updates.start() }
+            "files" -> if(value.string("requestId")==pendingFileRequest && ChatPresentation.token(input.text,input.caretPosition)==completionToken) {
+                completionFiles=value["files"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }; showCompletions()
+            }
+            "promptHistoryResult" -> if(value.string("requestId")==pendingPromptRequest && value.string("threadId")==activeId) {
+                historyPrompts=value["prompts"]?.jsonArray.orEmpty().map { it.jsonObject.string("id").orEmpty() to it.jsonObject.string("text").orEmpty() }; filterHistory()
+            }
+            "revealPrompt" -> if(value.string("threadId")==activeId) { pendingReveal=value.string("itemId"); incoming?.let { incoming=null; applyState(it) }; reveal() }
+            "historyResult" -> resumeResults(value)
+            "show" -> if(value.string("panel")=="models") modelPopup() else resumeHistory()
         }
     } }
-
     init {
-        border = JBUI.Borders.empty(10)
-        minimumSize = Dimension(300, 300)
-        val toolbar = JPanel(BorderLayout())
-        val tabbar = JPanel(FlowLayout(FlowLayout.LEFT, 3, 0))
-        tabbar.add(tabs.apply { preferredSize = Dimension(155, 29) })
-        tabbar.add(button("＋") { flushDraft(); dispatch("new") })
-        tabbar.add(button("История") { history() })
-        tabbar.add(button("Ранее") { visibleItems = minOf(500, visibleItems + 60); rendered = ""; applyState(state) })
-        tabbar.add(button("⋯") { settings() })
-        val accountbar = JPanel(FlowLayout(FlowLayout.LEFT, 3, 2))
-        accountbar.add(button("Подключить Codex") { dispatch("connect", "binary" to JsonPrimitive(state.string("binary").orEmpty())) })
-        accountbar.add(quota)
-        toolbar.add(tabbar, BorderLayout.NORTH); toolbar.add(accountbar, BorderLayout.SOUTH)
-        add(toolbar, BorderLayout.NORTH)
-        val center = JPanel(BorderLayout(0, 7)).apply { border = JBUI.Borders.emptyTop(8); add(scroll, BorderLayout.CENTER) }
-        add(center, BorderLayout.CENTER)
-        val composer = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
-        val alerts = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); add(notices); add(approval) }
-        composer.add(alerts)
-        composer.add(files)
-        input.lineWrap = true; input.wrapStyleWord = true; input.toolTipText = "Enter — отправить, Shift+Enter — новая строка. / — команды, @ — файл."
-        composer.add(JBScrollPane(input).apply { maximumSize = Dimension(Int.MAX_VALUE, 160) })
-        val actions = JPanel(FlowLayout(FlowLayout.LEFT, 3, 3))
-        actions.add(button("＋ файл") { dispatch("attach") }); actions.add(button("@") { findFile() }); actions.add(button("/") { commandMenu() })
-        actions.add(send); actions.add(stop)
-        composer.add(actions)
-        val models = JPanel(FlowLayout(FlowLayout.LEFT, 3, 0))
-        model.preferredSize = Dimension(165, 26); effort.preferredSize = Dimension(90, 26); skill.preferredSize = Dimension(120, 26)
-        models.add(model); models.add(effort); models.add(skill); composer.add(models)
-        val usage = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2)).apply { add(context); add(compact) }
-        composer.add(usage)
-        composer.add(JBLabel("Enter — отправить · Shift+Enter — новая строка").apply { foreground = JBColor.GRAY; font = font.deriveFont(10f) })
-        composer.add(branch); composer.add(status)
-        center.add(composer, BorderLayout.SOUTH)
-        tabs.addActionListener { if (!updating) (tabs.selectedItem as? Choice)?.let { flushDraft(); dispatch("select", "threadId" to JsonPrimitive(it.id)) } }
-        model.addActionListener { if (!updating) (model.selectedItem as? Choice)?.let { dispatch("model", "model" to JsonPrimitive(it.id)) } }
-        effort.addActionListener { if (!updating) (model.selectedItem as? Choice)?.let { dispatch("model", "model" to JsonPrimitive(it.id), "effort" to JsonPrimitive(effort.selectedItem?.toString().orEmpty())) } }
-        send.addActionListener { submit() }; stop.addActionListener { dispatch("stop") }; compact.addActionListener { dispatch("compact") }
-        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "send")
-        input.actionMap.put("send", object : AbstractAction() { override fun actionPerformed(e: ActionEvent?) {
-            if (input.getClientProperty("composing") == true) return
-            when { input.text == "/" -> commandMenu(); input.text.trimEnd().endsWith("@") -> findFile(); else -> submit() }
-        } })
-        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), "insert-break")
-        input.addInputMethodListener(object : InputMethodListener {
-            override fun inputMethodTextChanged(e: InputMethodEvent) { input.putClientProperty("composing", (e.text?.endIndex ?: 0) > e.committedCharacterCount) }
+        background=CHAT_BG; foreground=CHAT_FG; border=EmptyBorder(8,8,8,8); minimumSize=Dimension(300,300)
+        val tabScroll=JBScrollPane(tabs).apply { border=EmptyBorder(0,0,0,0); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED; verticalScrollBarPolicy=ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER; preferredSize=Dimension(300,38); viewport.background=CHAT_BG; border=BorderFactory.createMatteBorder(0,0,1,0,Color(0x303236)) }
+        add(tabScroll,BorderLayout.NORTH)
+        val center=transparentPanel(BorderLayout(0,8)).apply { add(notices,BorderLayout.NORTH); add(scroll,BorderLayout.CENTER); add(bottom,BorderLayout.SOUTH) }; add(center,BorderLayout.CENTER)
+        val composer=RoundedPanel(COMPOSER_BG,Color(0x3C3E42))
+        input.lineWrap=true; input.wrapStyleWord=true; input.background=COMPOSER_BG; input.foreground=CHAT_FG; input.caretColor=CHAT_FG; input.border=EmptyBorder(0,0,0,0)
+        input.toolTipText="Message Codex · / commands and skills · @ files and plugins"
+        input.font=Font(Font.SANS_SERIF,Font.PLAIN,13)
+        inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,140); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars() }
+        val composeTop=vertical().apply { add(files); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
+        composer.add(transparentPanel(FlowLayout(FlowLayout.RIGHT,5,0)).apply { border=EmptyBorder(5,0,0,0); add(flatButton(icon=ChatIcon("clip",CHAT_FG,20),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(28,28); border=EmptyBorder(3,3,3,3) }); add(send) },BorderLayout.SOUTH)
+        connectedBottom.add(approval); connectedBottom.add(composer)
+        connectedBottom.add(transparentPanel(FlowLayout(FlowLayout.CENTER,0,4)).apply { add(model) })
+        connectedBottom.add(transparentPanel(BorderLayout()).apply { border=BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(1,0,0,0,Color(0x303236)),EmptyBorder(5,0,0,0)); add(transparentPanel(FlowLayout(FlowLayout.LEFT,0,0)).apply { add(history); add(RoundedPanel(CHAT_BG,Color(0x42464C)).apply { border=EmptyBorder(0,3,0,3); add(quota) }) },BorderLayout.WEST); add(context,BorderLayout.EAST) })
+        input.document.addDocumentListener(object: DocumentListener {
+            override fun insertUpdate(e: DocumentEvent)=changed(); override fun removeUpdate(e: DocumentEvent)=changed(); override fun changedUpdate(e: DocumentEvent)=changed()
+            private fun changed() { if(!updating) { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart(); inputResize.restart(); updateSend() } }
+        })
+        input.addCaretListener { if(!updating) autocomplete.restart() }
+        input.addFocusListener(object: FocusAdapter() { override fun focusGained(e: FocusEvent?) { dispatch("refresh") } })
+        input.addInputMethodListener(object: InputMethodListener {
+            override fun inputMethodTextChanged(e: InputMethodEvent) { input.putClientProperty("composing",(e.text?.endIndex ?: 0)>e.committedCharacterCount) }
             override fun caretPositionChanged(e: InputMethodEvent) {}
         })
-        input.document.addDocumentListener(object : DocumentListener {
-            override fun insertUpdate(e: DocumentEvent) { changed() }; override fun removeUpdate(e: DocumentEvent) { changed() }; override fun changedUpdate(e: DocumentEvent) { changed() }
-            private fun changed() { if (!updating) { draftThread = activeId; draftText = input.text; drafts.restart() } }
-        })
-        input.addFocusListener(object : FocusAdapter() { override fun focusGained(e: FocusEvent?) { dispatch("refresh") } })
-        val textTransfer = input.transferHandler
-        input.transferHandler = object : TransferHandler() {
-            override fun canImport(support: TransferSupport): Boolean = support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) || support.isDataFlavorSupported(DataFlavor.imageFlavor) || textTransfer.canImport(support)
-            override fun importData(support: TransferSupport): Boolean = try {
-                when {
-                    support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) -> {
-                        @Suppress("UNCHECKED_CAST") val dropped = support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>
-                        dispatch("nativeAttachPaths", "paths" to JsonArray(dropped.map { JsonPrimitive(it.absolutePath) })); true
-                    }
-                    support.isDataFlavorSupported(DataFlavor.imageFlavor) -> {
-                        val image = support.transferable.getTransferData(DataFlavor.imageFlavor) as Image
-                        val width = image.getWidth(null); val height = image.getHeight(null)
-                        require(width > 0 && height > 0 && width.toLong() * height <= 16_000_000) { "Изображение из буфера слишком большое" }
-                        val buffered = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
-                        val graphics = buffered.createGraphics(); try { graphics.drawImage(image, 0, 0, null) } finally { graphics.dispose() }
-                        val bytes = ByteArrayOutputStream(); ImageIO.write(buffered, "png", bytes)
-                        dispatch("pasteImage", "name" to JsonPrimitive("Изображение.png"), "mime" to JsonPrimitive("image/png"), "data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes.toByteArray()))); true
-                    }
-                    else -> textTransfer.importData(support)
-                }
-            } catch (e: Exception) { status.text = e.message ?: "Не удалось добавить вложение"; false }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,0),"send") {
+            if(input.getClientProperty("composing")!=true) { if(completionOpen) completionList?.selectedValue?.action?.invoke() else if(!busy()) submit() }
         }
-        transcript.addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) e.url?.toString()?.let { if (it.startsWith("https://") || it.startsWith("http://")) BrowserUtil.browse(it) } }
-        service.listener = sink; dispatch("ready")
+        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,InputEvent.SHIFT_DOWN_MASK),"insert-break")
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE,0),"dismiss") { hideCompletions() }
+        for((key,delta) in listOf(KeyEvent.VK_DOWN to 1,KeyEvent.VK_UP to -1)) {
+            val stroke=KeyStroke.getKeyStroke(key,0); val previous=input.inputMap.get(stroke)
+            bind(stroke,"completion$key") { val list=completionList
+                if(completionOpen && list!=null) { list.selectedIndex=(list.selectedIndex+delta).coerceIn(0,(list.model.size-1).coerceAtLeast(0)); list.ensureIndexIsVisible(list.selectedIndex) }
+                else input.actionMap.get(previous)?.actionPerformed(ActionEvent(input,ActionEvent.ACTION_PERFORMED,""))
+            }
+        }
+        addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart() } })
+        setupTransfers()
+        transcript.onLink = { e -> if(e.eventType==javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) if(e.description?.startsWith("agent-copy:")==true) {
+                runCatching { val text=String(Base64.getUrlDecoder().decode(e.description.removePrefix("agent-copy:")),Charsets.UTF_8); Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text),null) }
+            } else e.url?.toString()?.let { if(it.startsWith("https://")||it.startsWith("http://")) BrowserUtil.browse(it) } }
+        connect.componentPopupMenu=JPopupMenu().apply { add(JMenuItem("Settings").apply { addActionListener { settings() } }) }
+        service.listener=sink; dispatch("ready")
     }
-    private fun button(text: String, action: () -> Unit) = JButton(text).apply { addActionListener { action() } }
-    private fun dispatch(type: String, vararg values: Pair<String, JsonElement>) = service.dispatch(obj { put("type", type); put("threadId", activeId); values.forEach { (key, value) -> put(key, value) } })
-    private fun flushDraft() { if (drafts.isRunning) { drafts.stop(); dispatch("draft", "threadId" to JsonPrimitive(draftThread), "text" to JsonPrimitive(draftText)) } }
+    private fun bind(key: KeyStroke,name: String,action: ()->Unit) { input.inputMap.put(key,name); input.actionMap.put(name,object: AbstractAction() { override fun actionPerformed(e: ActionEvent?)=action() }) }
+    private fun dispatch(type: String,vararg values: Pair<String,JsonElement>)=service.dispatch(obj { put("type",type); put("threadId",activeId); values.forEach { (key,value)->put(key,value) } })
+    private fun chat()=state["sessions"]?.jsonArray?.map { it.jsonObject }?.firstOrNull { it.string("id")==activeId }
+    private fun busy()=chat()?.string("state")?.let { it!="idle" } ?: false
+    private fun flushDraft() { if(drafts.isRunning) { drafts.stop(); dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText)) } }
+    private fun resizeComposer() {
+        if(disposed || !::inputScroll.isInitialized) return
+        val metrics=input.getFontMetrics(input.font)
+        val available=(input.width.takeIf { it>0 } ?: (width-52)).coerceAtLeast(100)
+        var rows=0
+        for(line in input.text.lineSequence()) {
+            rows+=maxOf(1,kotlin.math.ceil(metrics.stringWidth(line.take(2000)).toDouble()/available).toInt())
+            if(rows>=8) break
+        }
+        val height=(rows*metrics.height+6).coerceIn(24,140)
+        if(inputScroll.preferredSize.height!=height) { inputScroll.preferredSize=Dimension(260,height); connectedBottom.revalidate() }
+    }
+    private fun updateSend() { send.working=busy(); send.isEnabled=state["connected"]?.jsonPrimitive?.booleanOrNull==true && (busy() || state["signedIn"]?.jsonPrimitive?.booleanOrNull==true && chat()!=null && (input.text.isNotBlank() || chat()?.get("files")?.jsonArray?.isNotEmpty()==true)) }
     private fun submit() {
-        if (!send.isEnabled) return
-        val text = input.text.trim()
-        when (text) { "/model" -> { model.requestFocusInWindow(); return }; "/resume" -> { history(); return } }
-        send.isEnabled = false; drafts.stop()
-        dispatch("send", "text" to JsonPrimitive(text), "skill" to ((skill.selectedItem as? Choice)?.id?.takeIf { it.isNotEmpty() }?.let(::JsonPrimitive) ?: JsonNull))
+        if(!send.isEnabled || busy()) return
+        when(input.text.trim()) {
+            "/model" -> { modelPopup(); return }; "/resume" -> { resumeHistory(); return }; "/settings" -> { settings(); return }
+        }
+        drafts.stop(); hideCompletions(); send.isEnabled=false
+        dispatch("send","text" to JsonPrimitive(input.text.trim()),"skill" to (selectedSkill?.let(::JsonPrimitive) ?: JsonNull),"plugin" to (selectedPlugin ?: JsonNull))
     }
     private fun applyState(value: JsonObject) {
-        updating = true
+        updating=true
         try {
-            state = value
-            val oldId = activeId; activeId = value.string("activeId").orEmpty()
-            val chats = value["sessions"]!!.jsonArray.map { it.jsonObject }
-            val chat = chats.firstOrNull { it.string("id") == activeId }
-            val nextControls = chats.map { it.string("id") to it.string("title") }.toString() + activeId + value["models"].toString() + value["skills"].toString() + chat?.string("model") + chat?.string("effort") + chats.map { it["open"] to it["state"] }.toString()
-            if (nextControls != controlsSignature) {
-            controlsSignature = nextControls
-            tabs.removeAllItems(); chats.filter { it["open"]?.jsonPrimitive?.booleanOrNull != false || it.string("state") != "idle" }.forEach { tabs.addItem(Choice(it.string("id")!!, (if (it.string("state") != "idle") "● " else "") + (it.string("title") ?: "Чат"))) }
-            tabs.selectedItem = (0 until tabs.itemCount).map { tabs.getItemAt(it) }.firstOrNull { it.id == activeId }
-            val catalog = value["models"]!!.jsonArray.map { it.jsonObject }
-            val selected = chat?.string("model").orEmpty()
-            model.removeAllItems(); catalog.forEach { model.addItem(Choice(it.string("model")!!, it.string("displayName")!!)) }
-            model.selectedItem = (0 until model.itemCount).map { model.getItemAt(it) }.firstOrNull { it.id == selected }
-            effort.removeAllItems(); catalog.firstOrNull { it.string("model") == selected }?.get("supportedReasoningEfforts")?.jsonArray?.forEach { effort.addItem(it.jsonObject.string("reasoningEffort")) }; effort.selectedItem = chat?.string("effort")
-            val selectedSkill = (skill.selectedItem as? Choice)?.id
-            skill.removeAllItems(); skill.addItem(Choice("", "Без skill")); value["skills"]!!.jsonArray.forEach { val s = it.jsonObject; if (s["enabled"]?.jsonPrimitive?.booleanOrNull != false) skill.addItem(Choice(s.string("name")!!, s.string("name")!!)) }
-            skill.selectedItem = (0 until skill.itemCount).map { skill.getItemAt(it) }.firstOrNull { it.id == selectedSkill } ?: skill.getItemAt(0)
+            val old=activeId; state=value; activeId=value.string("activeId").orEmpty()
+            val chat=chat(); val switched=old!=activeId
+            if(switched) { popup?.cancel(); hideCompletions(); pendingPromptRequest=null; pendingReveal=null; selectedSkill=null; selectedPlugin=null; renderSelections() }
+            val connected=value["connected"]?.jsonPrimitive?.booleanOrNull==true
+            val signedIn=value["signedIn"]?.jsonPrimitive?.booleanOrNull==true
+            val sessions=value["sessions"]?.jsonArray.orEmpty().map { it.jsonObject }
+            val signature=sessions.map { listOf(it["id"],it["title"],it["open"],it["state"]) }.toString()+activeId+connected
+            if(signature!=controlsSignature) {
+                controlsSignature=signature; tabs.removeAll()
+                sessions.filter { it["open"]?.jsonPrimitive?.booleanOrNull!=false || it.string("state")!="idle" }.forEach { session ->
+                    val id=session.string("id").orEmpty(); val title=session.string("title") ?: "New chat"
+                    tabs.add(flatButton((if(session.string("state")!="idle") "• " else "")+title.take(24),tooltip=title) { flushDraft(); dispatch("select","threadId" to JsonPrimitive(id)) }.apply {
+                        foreground=if(id==activeId) CHAT_FG else CHAT_MUTED
+                        border=EmptyBorder(7,11,7,11)
+                        (this as HoverButton).apply { outlined=true; selectedChat=id==activeId }
+                        componentPopupMenu=tabMenu(id,title)
+                    })
+                }
+                tabs.add(flatButton(icon=ChatIcon("plus"),tooltip="New chat") { flushDraft(); dispatch("new") }.apply { isEnabled=connected })
             }
-            val busy = chat?.string("state")?.let { it != "idle" } ?: false
-            val connected = value["connected"]?.jsonPrimitive?.booleanOrNull == true
-            val signedIn = value["signedIn"]?.jsonPrimitive?.booleanOrNull == true
-            send.isEnabled = connected && signedIn && chat != null && !busy
-            stop.isEnabled = busy; compact.isEnabled = chat != null && !busy && connected
-            input.isEnabled = connected && signedIn && chat != null
-            val draft = chat?.string("draft").orEmpty()
-            if (oldId != activeId || (draft != latestDraft && (!input.hasFocus() || busy && draft.isEmpty()))) input.text = draft
-            latestDraft = draft
-            status.text = value.string("status").orEmpty(); status.toolTipText = status.text
-            branch.text = "⑂ ${value.string("branch")} · ${chat?.string("state") ?: ""}"; branch.toolTipText = value.string("cwd")
-            val percent = chat?.get("contextPercent")?.jsonPrimitive?.doubleOrNull
-            val stale = chat?.get("contextStale")?.jsonPrimitive?.booleanOrNull == true
-            context.text = percent?.let { "Контекст: ${"%.1f".format(it)}%${if (stale) " · устарел" else ""}" } ?: "Контекст: нет данных"
-            context.foreground = when { stale || percent == null -> JBColor.GRAY; percent >= 90 -> JBColor(0xB52727,0xF08282); percent > 70 -> JBColor(0x936000,0xE5AB5E); else -> JBColor.foreground() }
-            quota.text = quotaLabel()
-            quotaDialog?.takeIf { it.isVisible }?.let { updateQuotaDialog(it) }
-            val nextFiles = chat?.get("files").toString()
-            if (nextFiles != filesSignature) { filesSignature = nextFiles
-            files.removeAll(); chat?.get("files")?.jsonArray?.forEach { f -> val file = f.jsonObject; files.add(button("${file.string("name")} ×") { dispatch("removeAttachment", "id" to file["id"]!!) }.apply {
-                file.string("preview")?.substringAfter(',')?.let { encoded -> runCatching { ImageIO.read(java.io.ByteArrayInputStream(Base64.getDecoder().decode(encoded))) }.getOrNull()?.let { image -> icon = ImageIcon(image.getScaledInstance(32,32,Image.SCALE_SMOOTH)) } }
-            }) }
+            val mode=if(!connected) "connect" else if(!signedIn) "login" else if(chat==null) "new" else "composer"
+            if(mode!=bottomMode) { bottomMode=mode; bottom.removeAll(); bottom.add(when(mode) { "connect" -> connect; "new" -> flatButton("New chat") { dispatch("new") }; "login" -> flatButton("Sign in to Codex") { dispatch("login") }; else -> connectedBottom }) }
+            input.isEnabled=connected && signedIn && chat!=null
+            val draft=chat?.string("draft").orEmpty()
+            if(switched || (draft!=latestDraft && (!input.hasFocus() || busy() && draft.isEmpty()))) { input.text=draft; if(draft.isEmpty()) { selectedSkill=null; selectedPlugin=null; renderSelections() } }
+            latestDraft=draft; inputResize.restart()
+            val catalog=value["models"]?.jsonArray.orEmpty().map { it.jsonObject }
+            val modelName=catalog.firstOrNull { it.string("model")==chat?.string("model") }?.string("displayName") ?: chat?.string("model") ?: "Model"
+            model.text=modelName+" · "+(chat?.string("effort")?.replaceFirstChar { it.uppercase() } ?: "Reasoning")+" ▾"; model.isEnabled=!busy()
+            val percent=chat?.get("contextPercent")?.jsonPrimitive?.doubleOrNull
+            val stale=chat?.get("contextStale")?.jsonPrimitive?.booleanOrNull==true
+            context.text=percent?.let { "Context ${"%.1f".format(java.util.Locale.ROOT,it)}%${if(stale) " · stale" else ""}" } ?: "Context —"
+            context.foreground=when { percent==null || stale -> CHAT_MUTED; percent>75 -> Color(0xFF8989); percent>50 -> Color(0xF2C56E); else -> CHAT_MUTED }
+            quota.text="5h "+(quotaWindows().firstOrNull { it["minutes"]?.jsonPrimitive?.longOrNull==300L }?.get("remaining")?.jsonPrimitive?.doubleOrNull?.let { "${it.toInt()}%" } ?: "—")+" ▾"
+            if(popup?.isVisible==true && popup?.content?.getClientProperty("quota")==true && quotaSignature!=value["quotaWindows"].toString()) {
+                quotaSignature=value["quotaWindows"].toString()
+                (popup?.content?.getComponent(0) as? JPanel)?.let { panel -> val replacement=quotaContent(); panel.removeAll(); replacement.components.forEach { panel.add(it) }; panel.revalidate(); panel.repaint() }
             }
-            notices.removeAll(); value["notices"]?.jsonArray?.map { it.jsonObject }?.filter { it.string("threadId").let { id -> id == null || id == activeId } }?.takeLast(3)?.forEach { n ->
-                val row = JPanel(BorderLayout()).apply { border = JBUI.Borders.empty(4); background = JBColor(0xF2E5C9,0x393328) }
-                row.add(JBLabel("<html>${SafeMarkdown.escape(n.string("text").orEmpty())}</html>"), BorderLayout.CENTER)
-                row.add(button("×") { dispatch("dismissNotice", "id" to n["id"]!!) }, BorderLayout.EAST); notices.add(row)
-            }
-            approval.removeAll(); chat?.get("approvals")?.jsonArray?.forEach { a -> val request = a.jsonObject; val params = request["params"]!!.jsonObject
-                approval.add(JBLabel("<html>Разрешить: ${SafeMarkdown.escape(params.string("command") ?: params.string("reason") ?: "изменение файлов")}</html>"))
-                approval.add(JPanel(FlowLayout(FlowLayout.LEFT)).apply { add(button("Разрешить один раз") { dispatch("approve", "requestId" to JsonPrimitive(request["id"]!!.jsonPrimitive.content), "decision" to JsonPrimitive("accept")) }); add(button("Отклонить") { dispatch("approve", "requestId" to JsonPrimitive(request["id"]!!.jsonPrimitive.content), "decision" to JsonPrimitive("decline")) }) })
-            }
-            val items = chat?.get("items")?.jsonArray ?: JsonArray(emptyList())
-            val signature = "$activeId:$items:$connected:$signedIn"
-            if (signature != rendered) {
-                rendered = signature
-                val nearBottom = scroll.verticalScrollBar.let { it.value + it.visibleAmount >= it.maximum - 50 }
-                val body = if (!connected) "<h2>Codex в вашем проекте</h2><p>Нажмите ⋯ → Подключить Codex.</p>" else if (!signedIn) "<h2>Войдите в Codex</h2><p>Нажмите ⋯ → Войти через ChatGPT.</p>" else if (items.isEmpty()) "<h2>Что сделаем?</h2><p>Опишите задачу, прикрепите файлы или изображение.</p>" else items.takeLast(visibleItems).joinToString("") { item -> renderItem(item.jsonObject) }
-                val color = JBColor.foreground(); val background = JBColor.background()
-                fun hex(c: Color) = "#%02x%02x%02x".format(c.red,c.green,c.blue)
-                transcript.text = "<html><head><style>body{font-family:sans-serif;font-size:11px;color:${hex(color)};background:${hex(background)};margin:12px}pre{font-family:monospace;font-size:10px}h3{font-size:10px;color:#888888}p{margin-bottom:10px}</style></head><body>$body</body></html>"
-                if (nearBottom || oldId != activeId) SwingUtilities.invokeLater { if (!disposed) transcript.caretPosition = transcript.document.length }
+            updateSend(); renderFiles(chat); renderNotices(value); renderApprovals(chat)
+            val items=chat?.get("items")?.jsonArray ?: JsonArray(emptyList())
+            val next="$activeId:$items:$mode"
+            if(next!=rendered) {
+                rendered=next
+                val nearBottom=scroll.verticalScrollBar.let { it.value+it.visibleAmount>=it.maximum-50 }
+                val position=scroll.verticalScrollBar.value
+                val empty=when { !connected -> "Connect Codex to start a conversation."; !signedIn -> "Sign in to continue."; else -> "What would you like to build?" }
+                transcript.showItems(activeId,items,empty)
+                SwingUtilities.invokeLater { if(!disposed && activeId==chat?.string("id")) { if(pendingReveal!=null) reveal() else if(nearBottom || switched) scroll.verticalScrollBar.value=scroll.verticalScrollBar.maximum else scroll.verticalScrollBar.value=position } }
             }
             revalidate(); repaint()
-        } finally { updating = false }
+        } finally { updating=false }
     }
-    private fun renderItem(item: JsonObject): String = when (item.string("type")) {
-        "agentMessage", "plan" -> "<h3>Codex</h3>" + SafeMarkdown.render(item.string("text").orEmpty())
-        "userMessage" -> "<h3>Вы</h3>" + (item["content"] as? JsonArray).orEmpty().joinToString("") { c -> "<p>" + SafeMarkdown.escape(c.jsonObject.string("text") ?: "[Вложение]").replace("\n", "<br>") + "</p>" }
-        "reasoning", "hookPrompt" -> ""
-        else -> "<p><b>${SafeMarkdown.escape(item.string("command") ?: item.string("tool") ?: item.string("type").orEmpty())}</b> · ${SafeMarkdown.escape(item.string("status").orEmpty())}</p>" + item.string("aggregatedOutput")?.let { "<pre>${SafeMarkdown.escape(it.takeLast(16000))}</pre>" }.orEmpty()
+    private fun renderFiles(chat: JsonObject?) {
+        val next=chat?.get("files").toString(); if(next==filesSignature) return; filesSignature=next; files.removeAll()
+        chat?.get("files")?.jsonArray?.forEach { value -> val file=value.jsonObject
+            files.add(flatButton(file.string("name").orEmpty()+" ×",tooltip="Remove ${file.string("name")}") { dispatch("removeAttachment","id" to file["id"]!!) }.apply {
+                file.string("preview")?.substringAfter(',')?.let { encoded -> runCatching { ImageIO.read(java.io.ByteArrayInputStream(Base64.getDecoder().decode(encoded))) }.getOrNull()?.let { icon=ImageIcon(it.getScaledInstance(28,28,Image.SCALE_SMOOTH)) } }
+            })
+        }; files.isVisible=files.componentCount>0
     }
-    private fun commandMenu() { val popup = JPopupMenu(); listOf("/new", "/model", "/status", "/compact", "/resume").forEach { command -> popup.add(JMenuItem(command).apply { addActionListener { input.text = command; input.requestFocusInWindow() } }) }; popup.show(input, 0, 0) }
-    private fun findFile() {
-        val query = JOptionPane.showInputDialog(this, "Часть пути файла проекта", "@ Файл", JOptionPane.PLAIN_MESSAGE) ?: return
-        pendingFileRequest = java.util.UUID.randomUUID().toString()
-        dispatch("searchFiles", "query" to JsonPrimitive(query), "requestId" to JsonPrimitive(pendingFileRequest))
+    private fun renderNotices(value: JsonObject) {
+        val list=value["notices"]?.jsonArray.orEmpty().map { it.jsonObject }.filter { it.string("threadId").let { id -> id==null || id==activeId } }.takeLast(3)
+        val next=list.toString()+busy(); if(next==noticesSignature) return; noticesSignature=next; notices.removeAll()
+        list.forEach { notice ->
+            val fill=when(notice.string("level")) { "critical" -> Color(0x57282C); "warning" -> Color(0x594626); else -> Color(0x233D5B) }
+            val accent=when(notice.string("level")) { "critical" -> Color(0xED6270); "warning" -> Color(0xFFD34F); else -> Color(0x62B5EF) }
+            val card=RoundedPanel(fill,accent.darker()).apply { border=EmptyBorder(6,10,6,4) }
+            card.add(JBLabel(ChatIcon(if(notice.string("level")=="info") "info" else "warning",accent,23)).apply { border=EmptyBorder(0,0,0,10) },BorderLayout.WEST)
+            val text=JBLabel("<html>${SafeMarkdown.escape(notice.string("text").orEmpty())}</html>").apply { foreground=Color(0xFFF2D7); font=font.deriveFont(Font.PLAIN,12f) }; card.add(text,BorderLayout.CENTER)
+            card.add(flatButton(icon=ChatIcon("close"),tooltip="Dismiss notification") { dispatch("dismissNotice","id" to notice["id"]!!) }.apply { preferredSize=Dimension(20,20); minimumSize=preferredSize; border=EmptyBorder(0,0,0,0) },BorderLayout.EAST)
+            if(notice.string("action")=="compact") card.add(transparentPanel(FlowLayout(FlowLayout.LEFT,0,0)).apply { add(flatButton("Compact context") { dispatch("compact") }.apply { isEnabled=!busy() && state["connected"]?.jsonPrimitive?.booleanOrNull==true }) },BorderLayout.SOUTH)
+            notices.add(card); if(animatedNotices.add(notice.string("id").orEmpty())) card.animateIn(); while(animatedNotices.size>40) animatedNotices.remove(animatedNotices.first()); notices.add(Box.createVerticalStrut(6))
+        }; notices.isVisible=list.isNotEmpty()
     }
-    private fun showFiles(event: JsonObject) {
-        pendingFileRequest = null
-        val options = event["files"]!!.jsonArray.map { it.jsonPrimitive.content }.toTypedArray()
-        if (options.isEmpty()) JOptionPane.showMessageDialog(this, "Файлы не найдены") else {
-            val selected = JOptionPane.showInputDialog(this, "Выберите файл", "@ Файл", JOptionPane.PLAIN_MESSAGE, null, options, options[0]) as? String
-            selected?.let { dispatch("attachProjectFile", "path" to JsonPrimitive(it)); if (input.text.trimEnd().endsWith("@")) input.text = input.text.trimEnd().dropLast(1) }
+    private fun renderApprovals(chat: JsonObject?) {
+        val next=chat?.get("approvals").toString(); if(next==approvalsSignature) return; approvalsSignature=next; approval.removeAll()
+        chat?.get("approvals")?.jsonArray?.forEach { value -> val request=value.jsonObject; val params=request["params"]!!.jsonObject
+            val card=RoundedPanel(Color(0x233D5B)); card.add(JBLabel("<html>Allow ${SafeMarkdown.escape(params.string("command") ?: params.string("reason") ?: "file changes")}?</html>").apply { foreground=CHAT_FG },BorderLayout.CENTER)
+            card.add(transparentPanel(FlowLayout(FlowLayout.LEFT)).apply { for((label,decision) in listOf("Allow once" to "accept","Decline" to "decline")) add(flatButton(label) { dispatch("approve","requestId" to JsonPrimitive(request["id"]!!.jsonPrimitive.content),"decision" to JsonPrimitive(decision)) }) },BorderLayout.SOUTH); approval.add(card)
+        }; approval.isVisible=approval.componentCount>0
+    }
+    private fun tabMenu(id: String,title: String)=JPopupMenu().apply {
+        add(JMenuItem("Rename chat").apply { addActionListener { JOptionPane.showInputDialog(this@NativeChatPanel,"Chat title",title)?.let { dispatch("rename","threadId" to JsonPrimitive(id),"title" to JsonPrimitive(it)) } } })
+        for((label,action) in listOf("Close tab" to "close","Archive chat" to "archive")) add(JMenuItem(label).apply { addActionListener { flushDraft(); dispatch(action,"threadId" to JsonPrimitive(id)) } })
+        addSeparator(); add(JMenuItem("Settings").apply { addActionListener { settings() } })
+    }
+    private fun showPopup(owner: JComponent,content: JComponent,width: Int=300) {
+        popup?.cancel()
+        val container=RoundedPanel(COMPOSER_BG,Color(0x44464B)).apply {
+            add(content); preferredSize=Dimension(minOf(width,this@NativeChatPanel.width.coerceAtLeast(280)-16),content.preferredSize.height+20)
         }
+        content.isFocusable=true
+        val window=JBPopupFactory.getInstance().createComponentPopupBuilder(container,content)
+            .setRequestFocus(true).setFocusable(true).setCancelOnClickOutside(true).setCancelOnOtherWindowOpen(true).createPopup()
+        popup=window
+        if(owner.isShowing) window.show(RelativePoint(owner,Point(0,-container.preferredSize.height-4)))
+    }
+    private fun modelPopup() {
+        val panel=vertical(); panel.add(JBLabel("Choose model").apply { foreground=CHAT_MUTED })
+        state["models"]?.jsonArray?.forEach { value -> val item=value.jsonObject
+            panel.add(flatButton((item.string("displayName") ?: item.string("model").orEmpty())+if(item.string("model")==chat()?.string("model")) "  ✓" else "") {
+                dispatch("model","model" to item["model"]!!); popup?.cancel()
+            }.apply { horizontalAlignment=SwingConstants.LEFT; maximumSize=Dimension(Int.MAX_VALUE,32) })
+        }
+        panel.add(JSeparator().apply { maximumSize=Dimension(Int.MAX_VALUE,1); foreground=Color(0x45484E) }); panel.add(Box.createVerticalStrut(8)); panel.add(reasoningControls()); showPopup(model,panel,320)
+    }
+    private fun reasoningControls(): JPanel {
+        val selected=chat()?.string("model").orEmpty()
+        val entry=state["models"]?.jsonArray?.firstOrNull { it.jsonObject.string("model")==selected }?.jsonObject ?: return vertical()
+        val values=entry["supportedReasoningEfforts"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject.string("reasoningEffort") }
+        if(values.isEmpty()) return vertical()
+        val panel=vertical(); val label=JBLabel(chat()?.string("effort").orEmpty()).apply { foreground=CHAT_FG; alignmentX=Component.CENTER_ALIGNMENT }; panel.add(label)
+        panel.add(JSlider(0,values.lastIndex,values.indexOf(chat()?.string("effort")).coerceAtLeast(0)).apply {
+            isOpaque=false; majorTickSpacing=1; snapToTicks=true; paintTicks=true; accessibleContext.accessibleName="Reasoning effort"
+            addChangeListener { label.text=values[value].replaceFirstChar { it.uppercase() }; if(!valueIsAdjusting) dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(values[value])) }
+        }); panel.add(JBLabel(values.joinToString("   ") { it.replaceFirstChar { c -> c.uppercase() } }).apply { foreground=CHAT_MUTED; font=font.deriveFont(10f) }); return panel
+    }
+    private fun quotaWindows()=state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
+    private fun quotaPopup() {
+        dispatch("refresh"); showPopup(quota,quotaContent(),340); popup?.content?.putClientProperty("quota",true); quotaSignature=state["quotaWindows"].toString()
+    }
+    private fun quotaContent(): JPanel {
+        val panel=vertical()
+        for((minutes,label) in listOf(300L to "5-hour limit",10080L to "Weekly limit")) {
+            panel.add(JBLabel(label).apply { foreground=CHAT_FG; font=font.deriveFont(Font.BOLD) })
+            val windows=quotaWindows().filter { it["minutes"]?.jsonPrimitive?.longOrNull==minutes }
+            if(windows.isEmpty()) panel.add(JBLabel("Unavailable").apply { foreground=CHAT_MUTED })
+            windows.forEach { window ->
+                val remaining=window["remaining"]?.jsonPrimitive?.doubleOrNull
+                panel.add(JBLabel((remaining?.let { "${it.toInt()}% remaining" } ?: "Unavailable")+" · "+window.string("name").orEmpty()).apply { foreground=CHAT_FG })
+                val date=window["resetsAt"]?.jsonPrimitive?.longOrNull?.let { java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MMM d, HH:mm z",java.util.Locale.ENGLISH)) }
+                panel.add(JBLabel("Resets "+(date ?: "unavailable")).apply { foreground=CHAT_MUTED }); remaining?.let { panel.add(UsageMeter(it)) }
+            }; panel.add(Box.createVerticalStrut(14))
+        }; return panel
+    }
+    private fun promptHistory() {
+        historyPrompts=ChatPresentation.prompts(chat()?.get("items")?.jsonArray ?: JsonArray(emptyList()))
+        val panel=transparentPanel(BorderLayout(0,7)); val search=JTextField().apply { toolTipText="Search your prompts"; accessibleContext.accessibleName="Search your prompts" }
+        historyQuery=search; val list=JList<Prompt>().apply { background=COMPOSER_BG; foreground=CHAT_FG; fixedCellHeight=34; selectionMode=ListSelectionModel.SINGLE_SELECTION }; historyList=list
+        panel.add(search,BorderLayout.NORTH); panel.add(JBScrollPane(list).apply { preferredSize=Dimension(330,240); border=EmptyBorder(0,0,0,0); subtleScrollbars() },BorderLayout.CENTER)
+        fun choose() { list.selectedValue?.let { popup?.cancel(); pendingReveal=it.id; dispatch("revealPrompt","itemId" to JsonPrimitive(it.id)) } }
+        search.document.addDocumentListener(object: DocumentListener { override fun insertUpdate(e: DocumentEvent)=filterHistory(); override fun removeUpdate(e: DocumentEvent)=filterHistory(); override fun changedUpdate(e: DocumentEvent)=filterHistory() })
+        list.addMouseListener(object: MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if(list.locationToIndex(e.point)>=0) choose() } })
+        list.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,0),"choose"); list.actionMap.put("choose",object: AbstractAction() { override fun actionPerformed(e: ActionEvent?)=choose() })
+        search.addActionListener { choose() }; filterHistory(); showPopup(history,panel,360)
+        pendingPromptRequest=java.util.UUID.randomUUID().toString(); dispatch("promptHistory","requestId" to JsonPrimitive(pendingPromptRequest),"query" to JsonPrimitive("")); search.requestFocusInWindow()
+    }
+    private fun filterHistory() { val query=historyQuery?.text.orEmpty(); historyList?.setListData(historyPrompts.filter { it.second.contains(query,true) }.asReversed().map { Prompt(it.first,it.second) }.toTypedArray()); if((historyList?.model?.size ?: 0)>0) historyList?.selectedIndex=0 }
+    private fun reveal() { val id=pendingReveal ?: return; pendingReveal=null; SwingUtilities.invokeLater { if(!disposed) transcript.revealMessage(id) } }
+    private fun complete() {
+        if(disposed || !input.hasFocus() || input.getClientProperty("composing")==true) return
+        val token=ChatPresentation.token(input.text,input.caretPosition)
+        if(token==null) { hideCompletions(); return }
+        if(token!=completionToken) { completionFiles=emptyList(); pendingFileRequest=null }
+        completionToken=token; showCompletions()
+        if(token.marker=='@') { pendingFileRequest=java.util.UUID.randomUUID().toString(); dispatch("searchFiles","query" to JsonPrimitive(token.query),"requestId" to JsonPrimitive(pendingFileRequest)) }
+    }
+    private fun showCompletions() {
+        val token=completionToken ?: return
+        val options=mutableListOf<Suggestion>()
+        if(token.marker=='/') {
+            for((command,detail) in listOf("new" to "Start a new chat","compact" to "Compact current context","model" to "Choose model","resume" to "Resume a conversation","status" to "Show status","settings" to "Plugin settings")) if(command.contains(token.query,true)) options.add(Suggestion("/$command",detail) { replaceToken("/$command ") })
+            state["skills"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { skill -> options.add(Suggestion(skill.string("name").orEmpty(),skill.string("description") ?: "Skill") { selectedSkill=skill.string("name"); replaceToken(""); renderSelections() }) }
+        } else {
+            state["plugins"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { plugin -> options.add(Suggestion(plugin.string("name").orEmpty(),plugin.string("description") ?: "Plugin") { selectedPlugin=plugin; replaceToken(""); renderSelections() }) }
+            completionFiles.forEach { path -> options.add(Suggestion(path,"Project file") { dispatch("attachProjectFile","path" to JsonPrimitive(path)); replaceToken("") }) }
+        }
+        completionPopup?.cancel()
+        val list=JList(options.toTypedArray()).apply {
+            background=COMPOSER_BG; foreground=CHAT_FG; fixedCellHeight=46; fixedCellWidth=(this@NativeChatPanel.width-48).coerceIn(236,426); visibleRowCount=minOf(options.size.coerceAtLeast(1),7); selectedIndex=if(options.isEmpty()) -1 else 0
+            cellRenderer=ListCellRenderer { _, value, _, selected, _ ->
+                RoundedPanel(if(selected) Color(0x3A3D43) else COMPOSER_BG).apply {
+                    border=EmptyBorder(5,9,5,9)
+                    add(JBLabel(value.title).apply { foreground=CHAT_FG; font=font.deriveFont(Font.PLAIN,12f) },BorderLayout.NORTH)
+                    add(JBLabel(value.detail).apply { foreground=CHAT_MUTED; font=font.deriveFont(Font.PLAIN,11f) },BorderLayout.SOUTH)
+                }
+            }
+            addMouseListener(object: MouseAdapter() { override fun mouseClicked(e: MouseEvent) { selectedValue?.action?.invoke() } })
+        }; completionList=list
+        val menu=RoundedPanel(COMPOSER_BG,Color(0x44464B)).apply { isFocusable=false; border=EmptyBorder(6,6,6,6)
+            add(if(options.isEmpty()) JBLabel(if(token.marker=='@') "No matching files or plugins" else "No matching commands or skills").apply { foreground=CHAT_MUTED; border=EmptyBorder(8,8,8,8) } else JBScrollPane(list).apply { border=EmptyBorder(0,0,0,0); subtleScrollbars() })
+            preferredSize=Dimension((this@NativeChatPanel.width-24).coerceIn(260,450),if(options.isEmpty()) 38 else minOf(options.size,7)*46+12)
+        }
+        if(input.isShowing) {
+            list.isFocusable=false
+            completionPopup=JBPopupFactory.getInstance().createComponentPopupBuilder(menu,null)
+                .setFocusable(false).setRequestFocus(false).setCancelKeyEnabled(false)
+                .setCancelOnClickOutside(true).setCancelOnOtherWindowOpen(true).createPopup()
+            completionPopup?.show(RelativePoint(input,Point(0,-menu.preferredSize.height-10)))
+        }
+    }
+    private fun replaceToken(replacement: String) {
+        val token=completionToken ?: return
+        if(ChatPresentation.token(input.text,input.caretPosition)!=token) { hideCompletions(); return }
+        hideCompletions(); input.replaceRange(replacement,token.start,token.end); input.caretPosition=token.start+replacement.length; input.requestFocusInWindow()
+    }
+    private fun hideCompletions() { autocomplete.stop(); completionPopup?.cancel(); completionPopup=null; completionList=null; completionToken=null; pendingFileRequest=null }
+    private fun renderSelections() { selections.removeAll(); selectedSkill?.let { selections.add(flatButton("$it ×",tooltip="Remove skill") { selectedSkill=null; renderSelections() }) }; selectedPlugin?.let { selections.add(flatButton("${it.string("name")} ×",tooltip="Remove plugin") { selectedPlugin=null; renderSelections() }) }; selections.isVisible=selections.componentCount>0; selections.revalidate(); selections.repaint() }
+    private fun resumeHistory() { dispatch("history","query" to JsonPrimitive(JOptionPane.showInputDialog(this,"Search conversations","") ?: return)) }
+    private fun resumeResults(event: JsonObject) {
+        val entries=event["entries"]?.jsonArray.orEmpty().map { val item=it.jsonObject; Prompt(item.string("id").orEmpty(),item.string("name") ?: item.string("preview") ?: "Conversation") }.toTypedArray()
+        if(entries.isEmpty()) return
+        (JOptionPane.showInputDialog(this,"Resume a conversation","Conversations",JOptionPane.PLAIN_MESSAGE,null,entries,entries[0]) as? Prompt)?.let { flushDraft(); dispatch("resume","threadId" to JsonPrimitive(it.id)) }
     }
     private fun settings() {
-        val actions = arrayOf("Подключить Codex", "Войти через ChatGPT", "Переименовать чат", "Закрыть вкладку", "Архивировать чат", "Автостарт 5 ч: " + (if (state["autoWindowEnabled"]?.jsonPrimitive?.booleanOrNull == true) "вкл" else "выкл"), "Отмена")
-        when (JOptionPane.showOptionDialog(this, "Локальный Codex · ${state.string("version").orEmpty()}", "Agent GUI", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, actions, actions[0])) {
-            0 -> { val path = JOptionPane.showInputDialog(this, "Путь к Codex CLI (пусто — автоопределение)", state.string("binary").orEmpty()) ?: return; dispatch("connect", "binary" to JsonPrimitive(path)) }
-            1 -> dispatch("login")
-            2 -> JOptionPane.showInputDialog(this, "Название чата")?.let { dispatch("rename", "title" to JsonPrimitive(it)) }
-            3 -> dispatch("close")
-            4 -> dispatch("archive")
-            5 -> dispatch("toggleWarmup")
+        val actions=arrayOf("Codex CLI path","Sign in","Auto-start 5h: "+if(state["autoWindowEnabled"]?.jsonPrimitive?.booleanOrNull==true) "On" else "Off","Cancel")
+        when(JOptionPane.showOptionDialog(this,"Local Codex · ${state.string("version").orEmpty()}","Settings",JOptionPane.DEFAULT_OPTION,JOptionPane.PLAIN_MESSAGE,null,actions,actions[0])) {
+            0 -> JOptionPane.showInputDialog(this,"Codex CLI path (empty = automatic)",state.string("binary").orEmpty())?.let { dispatch("connect","binary" to JsonPrimitive(it)) }
+            1 -> dispatch("login"); 2 -> dispatch("toggleWarmup")
         }
     }
-    private fun history() {
-        val query = JOptionPane.showInputDialog(this, "Поиск по истории проекта", "") ?: return
-        pendingHistory = true
-        dispatch("history", "query" to JsonPrimitive(query))
-    }
-    private fun showHistory(event: JsonObject) {
-        pendingHistory = false
-        val entries = event["entries"]!!.jsonArray.map { val h = it.jsonObject; Choice(h.string("id")!!, h.string("name") ?: h.string("preview")?.take(100) ?: "Разговор") }.toTypedArray()
-        if (entries.isEmpty()) JOptionPane.showMessageDialog(this, "Разговоры не найдены") else {
-            val choice = JOptionPane.showInputDialog(this, "Выберите разговор", "История", JOptionPane.PLAIN_MESSAGE, null, entries, entries[0]) as? Choice
-            choice?.let { dispatch("resume", "threadId" to JsonPrimitive(it.id)) }
+    private fun setupTransfers() {
+        val original=input.transferHandler
+        input.transferHandler=object: TransferHandler() {
+            override fun canImport(support: TransferSupport)=support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)||support.isDataFlavorSupported(DataFlavor.imageFlavor)||original.canImport(support)
+            override fun importData(support: TransferSupport): Boolean=try {
+                when {
+                    support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) -> { @Suppress("UNCHECKED_CAST") val dropped=support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>; dispatch("nativeAttachPaths","paths" to JsonArray(dropped.map { JsonPrimitive(it.absolutePath) })); true }
+                    support.isDataFlavorSupported(DataFlavor.imageFlavor) -> {
+                        val image=support.transferable.getTransferData(DataFlavor.imageFlavor) as Image; val width=image.getWidth(null); val height=image.getHeight(null)
+                        require(width>0 && height>0 && width.toLong()*height<=16_000_000) { "Clipboard image is too large" }
+                        val buffered=BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB); val graphics=buffered.createGraphics(); try { graphics.drawImage(image,0,0,null) } finally { graphics.dispose() }
+                        val bytes=ByteArrayOutputStream(); ImageIO.write(buffered,"png",bytes); dispatch("pasteImage","name" to JsonPrimitive("Image.png"),"mime" to JsonPrimitive("image/png"),"data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes.toByteArray()))); true
+                    }
+                    else -> original.importData(support)
+                }
+            } catch(e: Exception) { JOptionPane.showMessageDialog(this@NativeChatPanel,e.message ?: "Could not attach file","Attachment",JOptionPane.ERROR_MESSAGE); false }
         }
     }
-    private fun quotaLabel(): String {
-        val window = state["quotaWindows"]?.jsonArray?.firstOrNull { it.jsonObject["minutes"]?.jsonPrimitive?.longOrNull == 300L }?.jsonObject
-        val remaining = window?.get("remaining")?.jsonPrimitive?.doubleOrNull
-        return "5 ч: " + (remaining?.let { "${it.toInt()}%" } ?: "нет данных")
-    }
-    private fun quotaPopup() {
-        dispatch("refresh")
-        val existing = quotaDialog
-        if (existing?.isVisible == true) { existing.toFront(); return }
-        val dialog = JDialog(SwingUtilities.getWindowAncestor(this), "Лимиты Codex", Dialog.ModalityType.MODELESS)
-        quotaDialog = dialog
-        updateQuotaDialog(dialog)
-        dialog.pack(); dialog.setLocationRelativeTo(quota); dialog.isVisible = true
-    }
-    private fun updateQuotaDialog(dialog: JDialog) {
-        val panel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); border = JBUI.Borders.empty(15) }
-        val windows = state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
-        for ((minutes, label) in listOf(300L to "5 часов",10080L to "Неделя")) {
-            panel.add(JBLabel(label).apply { font = font.deriveFont(Font.BOLD) })
-            val matches = windows.filter { it["minutes"]?.jsonPrimitive?.longOrNull == minutes }
-            if (matches.isEmpty()) panel.add(JBLabel("Нет данных"))
-            matches.forEach { window ->
-                val remaining = window["remaining"]?.jsonPrimitive?.doubleOrNull
-                val reset = window["resetsAt"]?.jsonPrimitive?.longOrNull
-                val date = reset?.let { java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm z")) } ?: "нет данных"
-                panel.add(JBLabel("${window.string("name").orEmpty()}: " + (remaining?.let { "${it.toInt()}% осталось" } ?: "нет данных")))
-                panel.add(JBLabel("Обновление: $date"))
-            }
-            panel.add(Box.createVerticalStrut(12))
-        }
-        panel.add(button("Закрыть") { dialog.dispose(); quotaDialog = null })
-        dialog.contentPane = panel
-        dialog.revalidate(); dialog.repaint()
-    }
-    override fun dispose() { disposed = true; quotaDialog?.dispose(); drafts.stop(); updates.stop(); if (service.listener === sink) service.listener = null }
+    override fun dispose() { disposed=true; flushDraft(); popup?.cancel(); hideCompletions(); drafts.stop(); updates.stop(); inputResize.stop(); if(service.listener===sink) service.listener=null }
 }
