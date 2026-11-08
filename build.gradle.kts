@@ -10,6 +10,7 @@ dependencies {
         local(providers.gradleProperty("studioPath").orElse("/Applications/Android Studio.app"))
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
+    implementation("org.commonmark:commonmark:0.24.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -20,6 +21,7 @@ intellijPlatform {
         name = "Agent GUI"
         ideaVersion { sinceBuild = "261"; untilBuild = "261.*" }
     }
+    pluginVerification { ides { current() } }
     buildSearchableOptions = false
 }
 tasks.test { useJUnitPlatform() }
