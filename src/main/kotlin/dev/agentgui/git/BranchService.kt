@@ -10,8 +10,8 @@ object BranchService {
             if (!p.waitFor(2, TimeUnit.SECONDS)) { p.destroyForcibly(); return@runCatching null }
             if (p.exitValue() != 0) null else p.inputStream.bufferedReader().readText().trim().ifEmpty { null }
         }.getOrNull()
-        if (!File(cwd).isDirectory) return "Нет каталога"
+        if (!File(cwd).isDirectory) return "Directory unavailable"
         return git("symbolic-ref", "--short", "HEAD")
-            ?: git("rev-parse", "--short", "HEAD")?.let { "detached · $it" } ?: "Без Git"
+            ?: git("rev-parse", "--short", "HEAD")?.let { "detached · $it" } ?: "No Git repository"
     }
 }

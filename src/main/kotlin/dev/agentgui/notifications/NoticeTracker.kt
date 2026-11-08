@@ -5,8 +5,8 @@ import kotlinx.serialization.json.*
 import java.time.Instant
 import java.util.UUID
 
-data class Notice(val text: String, val level: String, val threadId: String? = null, val id: String = UUID.randomUUID().toString()) {
-    fun json() = buildJsonObject { put("id", id); put("text", text); put("level", level); threadId?.let { put("threadId", it) } }
+data class Notice(val text: String, val level: String, val threadId: String? = null, val id: String = UUID.randomUUID().toString(), val action: String? = null) {
+    fun json() = buildJsonObject { put("id", id); put("text", text); put("level", level); threadId?.let { put("threadId", it) }; action?.let { put("action", it) } }
 }
 /** Pure threshold crossing logic. Neither billing dates nor unknown quotas are inferred. */
 class NoticeTracker {
@@ -15,12 +15,11 @@ class NoticeTracker {
     fun context(threadId: String, percent: Double?): Notice? {
         if (percent == null || !percent.isFinite()) return null
         val before = previousContext.put(threadId, percent) ?: 0.0
-        val crossed = listOf(50.0, 75.0, 90.0).lastOrNull { before < it && percent >= it } ?: return null
-        return Notice("Контекст заполнен на ${"%.1f".format(java.util.Locale.ROOT, percent)}%." + if (crossed >= 75) " Можно выполнить /compact после завершения задачи." else "", when { crossed >= 90 -> "critical"; crossed >= 75 -> "warning"; else -> "info" }, threadId)
+        val crossed = listOf(50.0, 75.0).lastOrNull { before < it && percent >= it } ?: return null
+        return Notice("Context is ${"%.1f".format(java.util.Locale.ROOT, percent)}% full. Compact to make room after the current task.", if (crossed >= 75) "critical" else "warning", threadId, action = "compact")
     }
     fun rates(snapshot: JsonObject): List<Notice> = buildList {
         val limit = snapshot.string("limitId") ?: "codex"
-        val name = snapshot.string("limitName") ?: limit
         for (kind in listOf("primary", "secondary")) {
             val window = snapshot[kind] as? JsonObject ?: continue
             val used = window["usedPercent"]?.jsonPrimitive?.doubleOrNull ?: continue
@@ -31,8 +30,8 @@ class NoticeTracker {
             val before = previousRates.put(key, remaining) ?: 100.0
             val crossed = listOf(50.0, 30.0, 10.0).lastOrNull { before > it && remaining <= it } ?: continue
             val minutes = window["windowDurationMins"]?.jsonPrimitive?.longOrNull
-            val label = minutes?.let { if (it % 60 == 0L) "${it / 60} ч" else "$it мин" } ?: kind
-            add(Notice("$name ($label): осталось ${remaining.toInt()}% лимита.", when { crossed <= 10 -> "critical"; crossed <= 30 -> "warning"; else -> "info" }))
+            val label = when(minutes) { 300L -> "5-hour limit"; 10080L -> "Weekly limit"; else -> minutes?.let { if (it % 60 == 0L) "${it / 60}h limit" else "$it min limit" } ?: kind }
+            add(Notice("$label: ${remaining.toInt()}% remaining.", when { crossed <= 10 -> "critical"; crossed <= 30 -> "warning"; else -> "info" }))
         }
         // Prevent obsolete quota reset cycles accumulating indefinitely.
         while (previousRates.size > 100) previousRates.remove(previousRates.keys.first())

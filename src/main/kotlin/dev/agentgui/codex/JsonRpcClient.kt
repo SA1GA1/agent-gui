@@ -18,7 +18,7 @@ class JsonRpcClient(
     @Volatile private var closed = false
 
     @Synchronized fun request(method: String, params: JsonObject = buildJsonObject {}): CompletableFuture<JsonObject> {
-        if (closed) return CompletableFuture.failedFuture(IllegalStateException("Codex отключён"))
+        if (closed) return CompletableFuture.failedFuture(IllegalStateException("Codex disconnected"))
         val id = ids.incrementAndGet()
         val future = CompletableFuture<JsonObject>().orTimeout(60, TimeUnit.SECONDS)
         pending[id.toString()] = future
@@ -49,13 +49,13 @@ class JsonRpcClient(
         } else if (id != null) {
             val future = pending.remove(id.jsonPrimitive.content) ?: return
             if (message["error"] != null) future.completeExceptionally(IllegalStateException(
-                message["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content ?: "Ошибка Codex"))
+                message["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content ?: "Error Codex"))
             else future.complete(message["result"] as? JsonObject ?: buildJsonObject {})
         }
     }
     @Synchronized override fun close() {
         closed = true
-        pending.values.toList().forEach { it.completeExceptionally(IllegalStateException("Процесс Codex завершён; запрос не был повторён")) }
+        pending.values.toList().forEach { it.completeExceptionally(IllegalStateException("Codex exited; the request was not retried")) }
         pending.clear()
     }
 }

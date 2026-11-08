@@ -24,6 +24,6 @@ class BranchServiceTest {
         assertTrue(BranchService.current(child.path).startsWith("detached · "))
     }
     @Test fun `unknown Git state is not represented as a branch`() {
-        assertEquals("Без Git", BranchService.current(root.toString()))
+        assertEquals("No Git repository", BranchService.current(root.toString()))
     }
 }

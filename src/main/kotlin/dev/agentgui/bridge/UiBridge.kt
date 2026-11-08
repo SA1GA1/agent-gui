@@ -14,7 +14,7 @@ import kotlinx.serialization.json.*
 class UiBridge(private val project: Project, private val browser: JBCefBrowser) : Disposable {
     private val service = project.service<SessionService>()
     private val query = JBCefJSQuery.create(browser as JBCefBrowserBase)
-    private val allowed = setOf("ready", "dismissNotice", "toggleWarmup", "connect", "login", "new", "select", "close", "rename", "history", "resume", "archive", "draft", "model", "send", "stop", "compact", "approve", "attach", "uploadText", "pasteImage", "removeAttachment", "searchFiles", "attachProjectFile", "refresh", "openUrl")
+    private val allowed = setOf("promptHistory", "revealPrompt", "ready", "dismissNotice", "toggleWarmup", "connect", "login", "new", "select", "close", "rename", "history", "resume", "archive", "draft", "model", "send", "stop", "compact", "approve", "attach", "uploadText", "pasteImage", "removeAttachment", "searchFiles", "attachProjectFile", "refresh", "openUrl")
     private val sink: (JsonObject) -> Unit = { event ->
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed && !browser.isDisposed) {
@@ -26,12 +26,12 @@ class UiBridge(private val project: Project, private val browser: JBCefBrowser) 
     init {
         query.addHandler { request ->
             try {
-                require(request.length <= 15 * 1024 * 1024) { "Сообщение слишком большое" }
+                require(request.length <= 15 * 1024 * 1024) { "Message is too large" }
                 val message = Json.parseToJsonElement(request).jsonObject
-                require(message["type"]?.jsonPrimitive?.content in allowed) { "Неизвестная команда" }
+                require(message["type"]?.jsonPrimitive?.content in allowed) { "Unknown command" }
                 service.dispatch(message)
                 JBCefJSQuery.Response("ok")
-            } catch (e: Exception) { JBCefJSQuery.Response(null, 400, e.message ?: "Неверный запрос") }
+            } catch (e: Exception) { JBCefJSQuery.Response(null, 400, e.message ?: "Invalid request") }
         }
         service.listener = sink
     }

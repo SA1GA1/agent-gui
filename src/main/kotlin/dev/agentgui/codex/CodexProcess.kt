@@ -17,9 +17,9 @@ class CodexProcess(
     val rpc = JsonRpcClient({ line -> synchronized(writer) { writer.write(line); writer.newLine(); writer.flush() } }, onEvent, onRequest)
     @Volatile private var disposed = false
     private val reader = Thread({
-        var reason = "Codex завершился. Подключитесь снова; сообщение не отправлено повторно."
+        var reason = "Codex exited. Reconnect to continue; the message was not retried."
         try { readJsonLines(process.inputStream.reader(Charsets.UTF_8), rpc::receive) }
-        catch (e: Exception) { reason = "Соединение с Codex прервано: ${e.javaClass.simpleName}" }
+        catch (e: Exception) { reason = "Codex connection interrupted: ${e.javaClass.simpleName}" }
         finally { rpc.close(); if (!disposed) { close(); onExit(reason) } }
     }, "agent-gui-stdio").apply { isDaemon = true; start() }
 
@@ -44,12 +44,12 @@ class CodexProcess(
                 (System.getenv("PATH") ?: "").split(java.io.File.pathSeparator).map { "$it/codex" } +
                     listOf("/opt/homebrew/bin/codex", "/usr/local/bin/codex", "${System.getProperty("user.home")}/.local/bin/codex")
             return candidates.firstOrNull { Files.isExecutable(Path.of(it)) && !Files.isDirectory(Path.of(it)) }
-                ?: error("Codex CLI не найден. Установите его и укажите путь в настройках панели.")
+                ?: error("Codex CLI was not found. Install it or set its path in settings.")
         }
         fun version(binary: String): String {
             val p = ProcessBuilder(binary, "--version").redirectErrorStream(true).start()
-            if (!p.waitFor(5, TimeUnit.SECONDS)) { p.destroyForcibly(); error("Codex не ответил на --version") }
-            check(p.exitValue() == 0) { "Не удалось проверить версию Codex" }
+            if (!p.waitFor(5, TimeUnit.SECONDS)) { p.destroyForcibly(); error("Codex did not respond to --version") }
+            check(p.exitValue() == 0) { "Could not check the Codex version" }
             return p.inputStream.bufferedReader().readText().trim().take(100)
         }
     }

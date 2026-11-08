@@ -46,20 +46,21 @@ class SessionService(private val project: Project) : Disposable {
     private var history = JsonArray(emptyList())
     private var historyCursor: String? = null
     private var extensions = JsonArray(emptyList())
+    private var plugins = JsonArray(emptyList())
     private var generation = 0
     private var connected = false
     private var signedIn = false
-    private var status = "Подключите установленный Codex CLI"
+    private var status = "Connect your installed Codex CLI"
     private var version = ""
-    private var branch = "Без данных"
+    private var branch = "Unavailable"
     @Volatile private var disposed = false
     @Volatile var listener: ((JsonObject) -> Unit)? = null
     private var publishPending = false
     private val queue = ArrayDeque<Pair<String, JsonObject>>()
     private val approvals = linkedMapOf<String, JsonObject>()
-    private val cwd get() = project.basePath ?: error("Откройте каталог проекта")
+    private val cwd get() = project.basePath ?: error("Open a project directory")
 
-    private class Chat(val id: String, var title: String = "Новый чат") {
+    private class Chat(val id: String, var title: String = "New chat") {
         var draft = ""
         var model = ""
         var effort = ""
@@ -70,6 +71,9 @@ class SessionService(private val project: Project) : Disposable {
         var usage = ContextUsage(null, "unknown")
         var stale = true
         val items = linkedMapOf<String, JsonObject>()
+        var revealedItems: List<JsonObject>? = null
+        val promptTurns = linkedMapOf<String, String>()
+        var promptRequest: String? = null
         val files = mutableListOf<JsonObject>()
     }
     init {
@@ -77,7 +81,7 @@ class SessionService(private val project: Project) : Disposable {
             runCatching { Json.parseToJsonElement(store.sessions).jsonArray }.getOrNull()?.forEach { value ->
                 val s = value.jsonObject
                 val id = s.string("id") ?: return@forEach
-                sessions[id] = Chat(id, s.string("title") ?: "Чат").apply {
+                sessions[id] = Chat(id, s.string("title") ?: "Chat").apply {
                     draft = s.string("draft") ?: ""; model = s.string("model") ?: ""; effort = s.string("effort") ?: ""
                     open = s["open"]?.jsonPrimitive?.booleanOrNull ?: true
                     files.addAll((s["files"] as? JsonArray).orEmpty().map { it.jsonObject })
@@ -90,11 +94,11 @@ class SessionService(private val project: Project) : Disposable {
     fun dispatch(message: JsonObject) {
         if (disposed) return
         worker.execute {
-            try { handle(message) } catch (e: Exception) { status = e.cause?.message ?: e.message ?: "Ошибка"; publish() }
+            try { handle(message) } catch (e: Exception) { status = e.cause?.message ?: e.message ?: "Error"; addError(status); publish() }
         }
     }
     private fun rpc(method: String, params: JsonObject = obj {}): JsonObject =
-        (process ?: error("Сначала подключите Codex")).rpc.request(method, params).join()
+        (process ?: error("Connect Codex first")).rpc.request(method, params).join()
     private fun handle(m: JsonObject) {
         val id = m.string("threadId") ?: store.activeId
         when (m.string("type")) {
@@ -103,19 +107,21 @@ class SessionService(private val project: Project) : Disposable {
             "login" -> {
                 val result = rpc("account/login/start", obj { put("type", "chatgpt") })
                 result.string("authUrl")?.let { url -> require(url.startsWith("https://")); BrowserUtil.browse(url) }
-                status = "Завершите вход в браузере"; publish()
+                status = "Complete sign-in in your browser"; publish()
             }
             "new" -> newChat()
-            "select" -> { require(sessions.containsKey(id)); store.activeId = id; ensureResumed(sessions.getValue(id)); refreshBranch(); publish() }
+            "select" -> { require(sessions.containsKey(id)); store.activeId = id; ensureResumed(sessions.getValue(id)); sessions.getValue(id).revealedItems = null; refreshBranch(); publish() }
             "close" -> { val chat = sessions[id] ?: return; chat.open = false; if (store.activeId == id) store.activeId = sessions.values.lastOrNull { it.open }?.id ?: ""; persist(); publish() }
             "rename" -> { val title = m.string("title")?.trim()?.take(100).orEmpty(); require(title.isNotEmpty()); rpc("thread/name/set", obj { put("threadId", id); put("name", title) }); sessions[id]?.title = title; persist(); publish() }
             "history" -> { val page = rpc("thread/list", obj { put("cwd", cwd); put("limit", 50); put("modelProviders", JsonArray(listOf(JsonPrimitive("openai")))); put("searchTerm", m.string("query") ?: ""); m.string("cursor")?.let { put("cursor", it) } }); history = page["data"]?.jsonArray ?: JsonArray(emptyList()); historyCursor = page.string("nextCursor"); listener?.invoke(obj { put("type", "historyResult"); put("entries", history); put("cursor", historyCursor) }); publish() }
+            "promptHistory" -> promptHistory(id, m)
+            "revealPrompt" -> revealPrompt(id, m.string("itemId").orEmpty())
             "resume" -> { val chat = sessions.getOrPut(id) { Chat(id) }; chat.open = true; store.activeId = id; ensureResumed(chat); persist(); publish() }
             "archive" -> { require(sessions[id]?.state.let { it == null || it == "idle" }); rpc("thread/archive", obj { put("threadId", id) }); sessions.remove(id); if (store.activeId == id) store.activeId = sessions.keys.lastOrNull() ?: ""; persist(); publish() }
             "draft" -> { sessions[id]?.draft = m.string("text")?.take(200000).orEmpty(); persist() }
             "model" -> {
                 val chat = sessions[id] ?: return
-                val model = models.firstOrNull { it.jsonObject.string("model") == m.string("model") }?.jsonObject ?: error("Модель недоступна")
+                val model = models.firstOrNull { it.jsonObject.string("model") == m.string("model") }?.jsonObject ?: error("Model unavailable")
                 val effort = m.string("effort") ?: model.string("defaultReasoningEffort").orEmpty()
                 require(model["supportedReasoningEfforts"]!!.jsonArray.any { it.jsonObject.string("reasoningEffort") == effort })
                 chat.model = model.string("model")!!; chat.effort = effort; chat.stale = true; persist(); publish()
@@ -123,30 +129,30 @@ class SessionService(private val project: Project) : Disposable {
             "send" -> send(id, m)
             "stop" -> { val chat = sessions[id] ?: return; if (chat.state == "queued") { queue.removeAll { it.first == id }; chat.state = "idle" } else chat.turnId?.let { turn -> rpc("turn/interrupt", obj { put("threadId", id); put("turnId", turn) }) }; publish() }
             "compact" -> {
-                val chat = sessions[id] ?: return; require(chat.state == "idle") { "Сжатие доступно после завершения задачи" }; ensureResumed(chat)
-                require(sessions.values.count { it.state in setOf("running", "compacting") } < 2) { "Дождитесь свободного места: уже выполняются две задачи" }; chat.state = "compacting"; warmup.activity(owner, true); publish()
+                val chat = sessions[id] ?: return; require(chat.state == "idle") { "Compact is available after the task finishes" }; ensureResumed(chat)
+                require(sessions.values.count { it.state in setOf("running", "compacting") } < 2) { "Two tasks are already running. Please wait for a free slot" }; chat.state = "compacting"; warmup.activity(owner, true); publish()
                 try { rpc("thread/compact/start", obj { put("threadId", id) }) } catch (e: Exception) { chat.state = "idle"; throw e }
             }
             "approve" -> {
-                val key = m.string("requestId") ?: return; val request = approvals[key] ?: error("Запрос разрешения больше не актуален")
+                val key = m.string("requestId") ?: return; val request = approvals[key] ?: error("This approval request is no longer active")
                 require(request["params"]?.jsonObject?.string("threadId") == id)
                 val decision = m.string("decision"); require(decision in setOf("accept", "decline", "cancel"))
                 process!!.rpc.respond(request["id"]!!, obj { put("decision", decision) }); approvals.remove(key); publish()
             }
             "attach" -> chooseFiles(id)
             "uploadText" -> {
-                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Не более 8 вложений" }
-                chat.files.add(attachments.text(m.string("name") ?: "Файл", m.string("text").orEmpty())); persist(); publish()
+                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Up to 8 attachments are supported" }
+                chat.files.add(attachments.text(m.string("name") ?: "File", m.string("text").orEmpty())); persist(); publish()
             }
             "pasteImage" -> {
-                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Не более 8 вложений" }
-                chat.files.add(attachments.paste(m.string("name") ?: "Изображение", m.string("mime").orEmpty(), m.string("data").orEmpty())); persist(); publish()
+                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Up to 8 attachments are supported" }
+                chat.files.add(attachments.paste(m.string("name") ?: "Image", m.string("mime").orEmpty(), m.string("data").orEmpty())); persist(); publish()
             }
             "removeAttachment" -> { val chat = sessions[id] ?: return; val file = chat.files.firstOrNull { it.string("id") == m.string("id") } ?: return; attachments.remove(file.string("id")!!); chat.files.remove(file); persist(); publish() }
             "searchFiles" -> searchFiles(m.string("query").orEmpty(), m.string("requestId").orEmpty())
             "attachProjectFile" -> {
                 val path = Path.of(cwd).resolve(m.string("path").orEmpty()).toRealPath()
-                require(path.startsWith(Path.of(cwd).toRealPath())) { "Файл вне проекта" }
+                require(path.startsWith(Path.of(cwd).toRealPath())) { "File is outside the project" }
                 ApplicationManager.getApplication().invokeLater {
                     val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
                     if (file != null) saveAndAdd(id, listOf(file))
@@ -157,16 +163,16 @@ class SessionService(private val project: Project) : Disposable {
             "dismissNotice" -> { notices.removeAll { it.id == m.string("id") }; publish() }
             "nativeAttachPaths" -> { val paths = m["paths"]!!.jsonArray.map { Path.of(it.jsonPrimitive.content) }; ApplicationManager.getApplication().invokeLater { saveAndAdd(id, paths.mapNotNull { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }) } }
             "openUrl" -> { val url = m.string("url").orEmpty(); require(url.startsWith("https://") || url.startsWith("http://")); BrowserUtil.browse(url) }
-            else -> error("Неподдерживаемая команда интерфейса")
+            else -> error("Unsupported interface command")
         }
     }
     private fun connect(binary: String) {
-        require(sessions.values.none { it.state != "idle" }) { "Дождитесь завершения задач перед подключением" }
+        require(sessions.values.none { it.state != "idle" }) { "Wait for running tasks before reconnecting" }
         generation++; val connectionGeneration = generation
         quotaPools.clear()
         process?.close(); process = null; warmThread = null; warmTurn = null; warmup.finish(owner); connected = false; signedIn = false; approvals.clear()
         sessions.values.forEach { it.resumed = false; it.stale = true }
-        store.binary = binary; status = "Подключение…"; publish()
+        store.binary = binary; status = "Connecting…"; publish()
         val executable = CodexProcess.discover(binary)
         version = CodexProcess.version(executable)
         process = CodexProcess(executable, cwd, { method, params -> if (!disposed) worker.execute { if (connectionGeneration == generation) event(method, params) } },
@@ -178,12 +184,13 @@ class SessionService(private val project: Project) : Disposable {
             models = JsonArray(catalog.filter { it.jsonObject["hidden"]?.jsonPrimitive?.booleanOrNull != true })
             signedIn = rpc("account/read", obj { put("refreshToken", false) })["account"].let { it != null && it != JsonNull }
             runCatching { rates(rpc("account/rateLimits/read")) }
-            connected = true; status = if (signedIn) "Готов" else "Войдите в Codex"
+            plugins = runCatching { installedPlugins(rpc("plugin/list", obj { put("cwds", JsonArray(listOf(JsonPrimitive(cwd)))); put("forceRefetch", false) })) }.getOrDefault(JsonArray(emptyList()))
+            connected = true; status = if (signedIn) "Ready" else "Sign in to Codex"
             extensions = runCatching { rpc("skills/list", obj { put("cwds", JsonArray(listOf(JsonPrimitive(cwd)))) })["data"]?.jsonArray?.firstOrNull()?.jsonObject?.get("skills")?.jsonArray }.getOrNull() ?: JsonArray(emptyList())
             refreshBranch()
             if (sessions.isEmpty()) newChat() else sessions[store.activeId]?.let { ensureResumed(it) }
             publish()
-        } catch (e: Exception) { generation++; val connectionGeneration = generation
+        } catch (e: Exception) { generation++
         process?.close(); process = null; connected = false; throw e }
     }
     private fun newChat() {
@@ -200,7 +207,7 @@ class SessionService(private val project: Project) : Disposable {
         if (chat.resumed) return
         val data = rpc("thread/resume", obj { put("threadId", chat.id); put("cwd", cwd);  })
         val thread = data["thread"]!!.jsonObject
-        require(thread.string("modelProvider") == "openai") { "Поддерживаются только разговоры OpenAI" }
+        require(thread.string("modelProvider") == "openai") { "Only OpenAI conversations are supported" }
         chat.title = thread.string("name") ?: thread.string("preview")?.take(60) ?: chat.title
         chat.model = data.string("model").orEmpty(); chat.effort = data.string("reasoningEffort").orEmpty()
         chat.items.clear()
@@ -208,18 +215,23 @@ class SessionService(private val project: Project) : Disposable {
         chat.resumed = true
     }
     private fun send(id: String, message: JsonObject) {
-        val chat = sessions[id] ?: error("Создайте чат")
-        require(chat.state == "idle") { "Запрос уже выполняется" }; require(signedIn) { "Войдите в Codex" }
+        val chat = sessions[id] ?: error("Create a chat")
+        require(chat.state == "idle") { "A task is already running" }; require(signedIn) { "Sign in to Codex" }
         val text = message.string("text")?.trim().orEmpty(); require(text.length <= 200000)
         if (text.startsWith('/')) { command(chat, text); return }
-        require(text.isNotEmpty() || chat.files.isNotEmpty()) { "Введите сообщение или добавьте вложение" }
+        require(text.isNotEmpty() || chat.files.isNotEmpty()) { "Enter a message or add an attachment" }
         ensureResumed(chat)
+        chat.revealedItems = null
         val input = buildJsonArray {
             if (text.isNotEmpty()) add(obj { put("type", "text"); put("text", text) })
             chat.files.forEach { add(attachments.input(it)) }
             message.string("skill")?.let { name ->
-                val skill = extensions.firstOrNull { it.jsonObject.string("name") == name }?.jsonObject ?: error("Skill недоступен")
+                val skill = extensions.firstOrNull { it.jsonObject.string("name") == name && it.jsonObject["enabled"]?.jsonPrimitive?.booleanOrNull != false }?.jsonObject ?: error("Skill unavailable")
                 add(obj { put("type", "skill"); put("name", name); put("path", skill.string("path")) })
+            }
+            (message["plugin"] as? JsonObject)?.let { selected ->
+                val plugin = plugins.firstOrNull { it.jsonObject.string("name") == selected.string("name") && it.jsonObject.string("path") == selected.string("path") }?.jsonObject ?: error("Plugin unavailable")
+                add(obj { put("type", "mention"); put("name", plugin.string("name")); put("path", plugin.string("path")) })
             }
         }
         val params = obj { put("threadId", id); put("input", input); if (chat.model.isNotEmpty()) put("model", chat.model); if (chat.effort.isNotEmpty()) put("effort", chat.effort) }
@@ -229,9 +241,9 @@ class SessionService(private val project: Project) : Disposable {
         when (text.substringBefore(' ')) {
             "/new" -> newChat()
             "/compact" -> handle(obj { put("type", "compact"); put("threadId", chat.id) })
-            "/status" -> { refreshBranch(); status = "$version · $branch · ${chat.state}" }
+            "/status" -> { refreshBranch(); status = "$version · $branch · ${chat.state}"; notices.add(Notice(status,"info",chat.id)) }
             "/model", "/resume" -> listener?.invoke(obj { put("type", "show"); put("panel", if (text == "/model") "models" else "history") })
-            else -> error("Эта терминальная команда не поддерживается GUI. Используйте меню / или список skills.")
+            else -> error("This terminal command is unavailable here. Use the / menu.")
         }
         chat.draft = ""; persist(); publish()
     }
@@ -241,7 +253,7 @@ class SessionService(private val project: Project) : Disposable {
             chat.state = "running"
             warmup.activity(owner, true)
             try { val turn = rpc("turn/start", params)["turn"]!!.jsonObject; chat.turnId = turn.string("id") }
-            catch (e: Exception) { chat.state = "idle"; status = "Запрос не повторён: ${e.cause?.message ?: e.message}" }
+            catch (e: Exception) { chat.state = "idle"; status = "Request was not retried: ${e.cause?.message ?: e.message}"; addError(status) }
         }
     }
     private fun event(method: String, p: JsonObject) {
@@ -252,7 +264,7 @@ class SessionService(private val project: Project) : Disposable {
         }
         val chat = sessions[p.string("threadId")]
         when (method) {
-            "account/login/completed", "account/updated" -> { signedIn = runCatching { rpc("account/read", obj { put("refreshToken", false) })["account"].let { it != null && it != JsonNull } }.getOrDefault(false); status = if (signedIn) "Готов" else "Вход не завершён" }
+            "account/login/completed", "account/updated" -> { signedIn = runCatching { rpc("account/read", obj { put("refreshToken", false) })["account"].let { it != null && it != JsonNull } }.getOrDefault(false); status = if (signedIn) "Ready" else "Sign-in incomplete" }
             "turn/started" -> { chat?.state = "running"; chat?.turnId = (p["turn"] as? JsonObject)?.string("id") }
             "item/started", "item/completed" -> { val item = p["item"] as? JsonObject; if (chat != null && item != null) chat.items[item.string("id") ?: return] = item; if (method == "item/completed" && item?.string("type") == "contextCompaction") { chat?.let { it.state = afterCompaction(it.state); it.stale = true }; pump() } }
             "item/agentMessage/delta" -> if (chat != null) {
@@ -260,11 +272,11 @@ class SessionService(private val project: Project) : Disposable {
                 val old = chat.items[itemId]
                 chat.items[itemId] = obj { put("id", itemId); put("type", "agentMessage"); put("text", old?.string("text").orEmpty() + p.string("delta").orEmpty()) }
             }
-            "turn/completed" -> { chat?.state = "idle"; chat?.turnId = null; val turn = p["turn"] as? JsonObject; if (turn?.get("error") != null && turn["error"] != JsonNull) status = turn["error"]!!.jsonObject.string("message") ?: "Ошибка задачи"; approvals.entries.removeIf { it.value["params"]?.jsonObject?.string("threadId") == chat?.id }; pump(); refreshBranch() }
+            "turn/completed" -> { chat?.state = "idle"; chat?.turnId = null; val turn = p["turn"] as? JsonObject; if (turn?.get("error") != null && turn["error"] != JsonNull) { status = turn["error"]!!.jsonObject.string("message") ?: "Task failed"; addError(status) }; approvals.entries.removeIf { it.value["params"]?.jsonObject?.string("threadId") == chat?.id }; pump(); refreshBranch() }
             "thread/tokenUsage/updated" -> if (chat != null) { chat.usage = ContextUsage.from(p["tokenUsage"]!!.jsonObject); chat.stale = false; noticeTracker.context(chat.id, chat.usage.percent)?.let { notices.add(it) } }
             "account/rateLimits/updated" -> rates(p)
             "thread/compacted" -> { chat?.let { it.stale = true; it.state = afterCompaction(it.state) }; pump() }
-            "error" -> status = (p["error"] as? JsonObject)?.string("message") ?: "Ошибка Codex"
+            "error" -> { status = (p["error"] as? JsonObject)?.string("message") ?: "Codex error"; addError(status) }
         }
         while (notices.size > 40) notices.removeFirst()
         chat?.let { while (it.items.size > 500) it.items.remove(it.items.keys.first()) }
@@ -341,26 +353,26 @@ class SessionService(private val project: Project) : Disposable {
         val thread = request["params"]?.jsonObject?.string("threadId")
         if (method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval") && sessions.containsKey(thread))
             approvals[request["id"]!!.jsonPrimitive.content] = request
-        else { process?.rpc?.reject(request["id"]!!, "Agent GUI does not support this server request"); status = "Codex запросил неподдерживаемый тип взаимодействия: $method" }
+        else { process?.rpc?.reject(request["id"]!!, "Agent GUI does not support this server request"); status = "Codex requested an unsupported interaction: $method" }
         publish()
     }
     private fun chooseFiles(id: String) {
         ApplicationManager.getApplication().invokeLater {
-            val descriptor = FileChooserDescriptor(true, false, false, false, false, true).withTitle("Добавить в Codex")
+            val descriptor = FileChooserDescriptor(true, false, false, false, false, true).withTitle("Attach to Codex")
             val files = FileChooser.chooseFiles(descriptor, project, null)
             saveAndAdd(id, files.toList())
         }
     }
     private fun saveAndAdd(id: String, files: List<VirtualFile>) {
         val dirty = files.any { FileDocumentManager.getInstance().isFileModified(it) }
-        if (dirty && Messages.showYesNoDialog(project, "Сохранить изменения перед прикреплением?", "Несохранённые файлы", Messages.getQuestionIcon()) != Messages.YES) return
+        if (dirty && Messages.showYesNoDialog(project, "Save changes before attaching?", "Unsaved files", Messages.getQuestionIcon()) != Messages.YES) return
         files.forEach { FileDocumentManager.getInstance().getDocument(it)?.let { doc -> FileDocumentManager.getInstance().saveDocument(doc) } }
-        worker.execute { runCatching { addFiles(id, files.map { Path.of(it.path) }) }.onFailure { status = it.message.orEmpty(); publish() } }
+        worker.execute { runCatching { addFiles(id, files.map { Path.of(it.path) }) }.onFailure { status = it.message.orEmpty(); addError(status); publish() } }
     }
 
     private fun addFiles(id: String, paths: List<Path>) {
         val chat = sessions[id] ?: return
-        require(chat.files.size + paths.size <= 8) { "Не более 8 вложений" }
+        require(chat.files.size + paths.size <= 8) { "Up to 8 attachments are supported" }
         paths.forEach { chat.files.add(attachments.snapshot(it)) }; persist(); publish()
     }
     private fun searchFiles(query: String, requestId: String) {
@@ -378,10 +390,69 @@ class SessionService(private val project: Project) : Disposable {
         })
         listener?.invoke(obj { put("type", "files"); put("requestId", requestId); put("files", JsonArray(results)) })
     }
+    private fun addError(text: String) {
+        if (notices.lastOrNull()?.text != text) notices.add(Notice(text, "critical"))
+        while (notices.size > 40) notices.removeFirst()
+    }
+    private fun promptHistory(id: String, request: JsonObject) {
+        val chat = sessions[id] ?: return
+        ensureResumed(chat)
+        val result = linkedMapOf<String, String>()
+        val query = request.string("query").orEmpty()
+        val requestId = request.string("requestId").orEmpty()
+        chat.promptRequest = requestId
+        chat.promptTurns.clear()
+        val connection = generation
+        fun finish() {
+            dev.agentgui.toolwindow.ChatPresentation.prompts(JsonArray(chat.items.values.toList())).forEach { (key, text) -> result[key] = text.take(2000) }
+            listener?.invoke(obj { put("type", "promptHistoryResult"); put("threadId", id); put("requestId", request["requestId"] ?: JsonNull)
+                put("prompts", buildJsonArray { result.entries.filter { it.value.contains(query, true) }.forEach { (key, text) -> add(obj { put("id", key); put("text", text) }) } }) })
+        }
+        fun page(cursor: String?, pages: Int) {
+            if (disposed || connection != generation || !sessions.containsKey(id) || chat.promptRequest != requestId || store.activeId != id) return
+            try {
+                val response = rpc("thread/items/list", obj { put("threadId", id); put("limit", 100); put("sortDirection", "asc"); cursor?.let { put("cursor", it) } })
+                response["data"]?.jsonArray?.forEach { value ->
+                    val entry = value.jsonObject; val item = entry["item"]?.jsonObject ?: return@forEach
+                    if (item.string("type") == "userMessage") {
+                        val key = item.string("id") ?: return@forEach
+                        chat.promptTurns[key] = entry.string("turnId").orEmpty()
+                        result[key] = dev.agentgui.toolwindow.ChatPresentation.userText(item).take(2000)
+                    }
+                }
+                val next = response.string("nextCursor")
+                if (next != null && next != cursor && pages < 1000 && result.size < 10000) worker.execute { page(next, pages + 1) } else finish()
+            } catch (_: Exception) { finish() }
+        }
+        page(null, 0)
+    }
+    private fun revealPrompt(id: String, itemId: String) {
+        val chat = sessions[id] ?: return
+        if (!chat.items.containsKey(itemId)) {
+            val turn = chat.promptTurns[itemId] ?: error("Prompt is no longer available. Open history again.")
+            val page = rpc("thread/items/list", obj { put("threadId", id); put("turnId", turn); put("limit", 100); put("sortDirection", "asc") })
+            val items = page["data"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject["item"] as? JsonObject }
+            require(items.any { it.string("id") == itemId }) { "Prompt is no longer available" }
+            chat.revealedItems = items
+        } else chat.revealedItems = null
+        publish()
+        listener?.invoke(obj { put("type", "revealPrompt"); put("threadId", id); put("itemId", itemId) })
+    }
+    private fun installedPlugins(response: JsonObject): JsonArray = buildJsonArray {
+        val seen = mutableSetOf<String>()
+        response["marketplaces"]?.jsonArray?.forEach { marketplace -> marketplace.jsonObject["plugins"]?.jsonArray?.forEach { value ->
+            val plugin = value.jsonObject
+            val id = plugin.string("id") ?: return@forEach
+            if (plugin["installed"]?.jsonPrimitive?.booleanOrNull == true && plugin["enabled"]?.jsonPrimitive?.booleanOrNull == true && plugin.string("availability") != "DISABLED_BY_ADMIN" && seen.add(id)) add(obj {
+                put("id", id); put("name", plugin.string("name")); put("path", "plugin://$id"); put("enabled", true)
+                put("description", (plugin["interface"] as? JsonObject)?.string("shortDescription").orEmpty())
+            })
+        } }
+    }
     private fun refreshBranch() { branch = BranchService.current(cwd) }
     private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)) } }).toString() }
     private fun disconnected(reason: String) {
-        connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear()
+        addError(reason); connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear()
         sessions.values.forEach { it.state = "idle"; it.turnId = null; it.resumed = false; it.stale = true }; publish()
     }
     private fun publishBatched() {
@@ -395,10 +466,10 @@ class SessionService(private val project: Project) : Disposable {
         listener?.invoke(obj {
             put("notices", JsonArray(notices.toList().takeLast(40).map { it.json() })); put("quotaWindows", quotaWindows()); put("autoWindowEnabled", warmup.state.enabled)
             put("type", "state"); put("connected", connected); put("signedIn", signedIn); put("status", status); put("version", version); put("binary", store.binary)
-            put("cwd", cwd); put("branch", branch); put("activeId", store.activeId); put("models", models); put("history", history); put("historyCursor", historyCursor); put("skills", extensions)
+            put("cwd", cwd); put("branch", branch); put("activeId", store.activeId); put("models", models); put("history", history); put("historyCursor", historyCursor); put("skills", extensions); put("plugins", plugins)
             put("sessions", buildJsonArray { sessions.values.forEach { chat -> add(obj {
                 put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("state", chat.state)
-                put("items", JsonArray(if (chat.id == store.activeId) chat.items.values.toList().takeLast(500) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
+                put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
                 put("files", buildJsonArray { chat.files.forEach { f -> add(JsonObject(f + ("preview" to (runCatching { if (chat.id == store.activeId) attachments.preview(f) else null }.getOrNull()?.let(::JsonPrimitive) ?: JsonNull)))) } })
                 put("approvals", JsonArray(approvals.values.filter { it["params"]?.jsonObject?.string("threadId") == chat.id }))
             }) } })
