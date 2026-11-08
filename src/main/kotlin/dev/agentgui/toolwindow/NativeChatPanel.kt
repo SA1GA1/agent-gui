@@ -50,6 +50,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
     private var state = obj {}
     private var activeId = ""
     private var rendered = ""
+    private var visibleItems = 60
     private var latestDraft = ""
     private var pendingFileRequest: String? = null
     private var pendingHistory = false
@@ -57,6 +58,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
     private var filesSignature = ""
     private var incoming: JsonObject? = null
     private val updates = Timer(120) { incoming?.let { incoming = null; applyState(it) } }.apply { start() }
+    private var quotaDialog: JDialog? = null
     private val quota = JButton("5 ч: нет данных").apply { addActionListener { quotaPopup() } }
     private data class Choice(val id: String, val label: String) { override fun toString() = label }
     private val sink: (JsonObject) -> Unit = { value -> ApplicationManager.getApplication().invokeLater {
@@ -75,6 +77,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
         tabbar.add(tabs.apply { preferredSize = Dimension(155, 29) })
         tabbar.add(button("＋") { flushDraft(); dispatch("new") })
         tabbar.add(button("История") { history() })
+        tabbar.add(button("Ранее") { visibleItems = minOf(500, visibleItems + 60); rendered = ""; applyState(state) })
         tabbar.add(button("⋯") { settings() })
         val accountbar = JPanel(FlowLayout(FlowLayout.LEFT, 3, 2))
         accountbar.add(button("Подключить Codex") { dispatch("connect", "binary" to JsonPrimitive(state.string("binary").orEmpty())) })
@@ -131,7 +134,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
                     }
                     support.isDataFlavorSupported(DataFlavor.imageFlavor) -> {
                         val image = support.transferable.getTransferData(DataFlavor.imageFlavor) as Image
-                        val buffered = BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB)
+                        val width = image.getWidth(null); val height = image.getHeight(null)
+                        require(width > 0 && height > 0 && width.toLong() * height <= 16_000_000) { "Изображение из буфера слишком большое" }
+                        val buffered = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
                         val graphics = buffered.createGraphics(); try { graphics.drawImage(image, 0, 0, null) } finally { graphics.dispose() }
                         val bytes = ByteArrayOutputStream(); ImageIO.write(buffered, "png", bytes)
                         dispatch("pasteImage", "name" to JsonPrimitive("Изображение.png"), "mime" to JsonPrimitive("image/png"), "data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes.toByteArray()))); true
@@ -160,10 +165,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
             val oldId = activeId; activeId = value.string("activeId").orEmpty()
             val chats = value["sessions"]!!.jsonArray.map { it.jsonObject }
             val chat = chats.firstOrNull { it.string("id") == activeId }
-            val nextControls = chats.map { it.string("id") to it.string("title") }.toString() + activeId + value["models"].toString() + value["skills"].toString() + chat?.string("model") + chat?.string("effort") + chats.map { it["open"] }.toString()
+            val nextControls = chats.map { it.string("id") to it.string("title") }.toString() + activeId + value["models"].toString() + value["skills"].toString() + chat?.string("model") + chat?.string("effort") + chats.map { it["open"] to it["state"] }.toString()
             if (nextControls != controlsSignature) {
             controlsSignature = nextControls
-            tabs.removeAllItems(); chats.filter { it["open"]?.jsonPrimitive?.booleanOrNull != false }.forEach { tabs.addItem(Choice(it.string("id")!!, it.string("title") ?: "Чат")) }
+            tabs.removeAllItems(); chats.filter { it["open"]?.jsonPrimitive?.booleanOrNull != false || it.string("state") != "idle" }.forEach { tabs.addItem(Choice(it.string("id")!!, (if (it.string("state") != "idle") "● " else "") + (it.string("title") ?: "Чат"))) }
             tabs.selectedItem = (0 until tabs.itemCount).map { tabs.getItemAt(it) }.firstOrNull { it.id == activeId }
             val catalog = value["models"]!!.jsonArray.map { it.jsonObject }
             val selected = chat?.string("model").orEmpty()
@@ -190,9 +195,12 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
             context.text = percent?.let { "Контекст: ${"%.1f".format(it)}%${if (stale) " · устарел" else ""}" } ?: "Контекст: нет данных"
             context.foreground = when { stale || percent == null -> JBColor.GRAY; percent >= 90 -> JBColor(0xB52727,0xF08282); percent > 70 -> JBColor(0x936000,0xE5AB5E); else -> JBColor.foreground() }
             quota.text = quotaLabel()
+            quotaDialog?.takeIf { it.isVisible }?.let { updateQuotaDialog(it) }
             val nextFiles = chat?.get("files").toString()
             if (nextFiles != filesSignature) { filesSignature = nextFiles
-            files.removeAll(); chat?.get("files")?.jsonArray?.forEach { f -> val file = f.jsonObject; files.add(button("${file.string("name")} ×") { dispatch("removeAttachment", "id" to file["id"]!!) }) }
+            files.removeAll(); chat?.get("files")?.jsonArray?.forEach { f -> val file = f.jsonObject; files.add(button("${file.string("name")} ×") { dispatch("removeAttachment", "id" to file["id"]!!) }.apply {
+                file.string("preview")?.substringAfter(',')?.let { encoded -> runCatching { ImageIO.read(java.io.ByteArrayInputStream(Base64.getDecoder().decode(encoded))) }.getOrNull()?.let { image -> icon = ImageIcon(image.getScaledInstance(32,32,Image.SCALE_SMOOTH)) } }
+            }) }
             }
             notices.removeAll(); value["notices"]?.jsonArray?.map { it.jsonObject }?.filter { it.string("threadId").let { id -> id == null || id == activeId } }?.takeLast(3)?.forEach { n ->
                 val row = JPanel(BorderLayout()).apply { border = JBUI.Borders.empty(4); background = JBColor(0xF2E5C9,0x393328) }
@@ -208,7 +216,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
             if (signature != rendered) {
                 rendered = signature
                 val nearBottom = scroll.verticalScrollBar.let { it.value + it.visibleAmount >= it.maximum - 50 }
-                val body = if (!connected) "<h2>Codex в вашем проекте</h2><p>Нажмите ⋯ → Подключить Codex.</p>" else if (!signedIn) "<h2>Войдите в Codex</h2><p>Нажмите ⋯ → Войти через ChatGPT.</p>" else if (items.isEmpty()) "<h2>Что сделаем?</h2><p>Опишите задачу, прикрепите файлы или изображение.</p>" else items.joinToString("") { item -> renderItem(item.jsonObject) }
+                val body = if (!connected) "<h2>Codex в вашем проекте</h2><p>Нажмите ⋯ → Подключить Codex.</p>" else if (!signedIn) "<h2>Войдите в Codex</h2><p>Нажмите ⋯ → Войти через ChatGPT.</p>" else if (items.isEmpty()) "<h2>Что сделаем?</h2><p>Опишите задачу, прикрепите файлы или изображение.</p>" else items.takeLast(visibleItems).joinToString("") { item -> renderItem(item.jsonObject) }
                 val color = JBColor.foreground(); val background = JBColor.background()
                 fun hex(c: Color) = "#%02x%02x%02x".format(c.red,c.green,c.blue)
                 transcript.text = "<html><head><style>body{font-family:sans-serif;font-size:11px;color:${hex(color)};background:${hex(background)};margin:12px}pre{font-family:monospace;font-size:10px}h3{font-size:10px;color:#888888}p{margin-bottom:10px}</style></head><body>$body</body></html>"
@@ -268,19 +276,32 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout()), Di
     }
     private fun quotaPopup() {
         dispatch("refresh")
-        val popup = JPopupMenu()
+        val existing = quotaDialog
+        if (existing?.isVisible == true) { existing.toFront(); return }
+        val dialog = JDialog(SwingUtilities.getWindowAncestor(this), "Лимиты Codex", Dialog.ModalityType.MODELESS)
+        quotaDialog = dialog
+        updateQuotaDialog(dialog)
+        dialog.pack(); dialog.setLocationRelativeTo(quota); dialog.isVisible = true
+    }
+    private fun updateQuotaDialog(dialog: JDialog) {
+        val panel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); border = JBUI.Borders.empty(15) }
         val windows = state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
         for ((minutes, label) in listOf(300L to "5 часов",10080L to "Неделя")) {
+            panel.add(JBLabel(label).apply { font = font.deriveFont(Font.BOLD) })
             val matches = windows.filter { it["minutes"]?.jsonPrimitive?.longOrNull == minutes }
-            if (matches.isEmpty()) popup.add(JMenuItem("$label: нет данных").apply { isEnabled = false })
+            if (matches.isEmpty()) panel.add(JBLabel("Нет данных"))
             matches.forEach { window ->
                 val remaining = window["remaining"]?.jsonPrimitive?.doubleOrNull
                 val reset = window["resetsAt"]?.jsonPrimitive?.longOrNull
                 val date = reset?.let { java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm z")) } ?: "нет данных"
-                popup.add(JMenuItem("$label · ${window.string("name").orEmpty()}: ${remaining?.toInt()?.toString() ?: "нет данных"}% · сброс $date").apply { isEnabled = false })
+                panel.add(JBLabel("${window.string("name").orEmpty()}: " + (remaining?.let { "${it.toInt()}% осталось" } ?: "нет данных")))
+                panel.add(JBLabel("Обновление: $date"))
             }
+            panel.add(Box.createVerticalStrut(12))
         }
-        popup.show(quota, 0, quota.height)
+        panel.add(button("Закрыть") { dialog.dispose(); quotaDialog = null })
+        dialog.contentPane = panel
+        dialog.revalidate(); dialog.repaint()
     }
-    override fun dispose() { disposed = true; drafts.stop(); updates.stop(); if (service.listener === sink) service.listener = null }
+    override fun dispose() { disposed = true; quotaDialog?.dispose(); drafts.stop(); updates.stop(); if (service.listener === sink) service.listener = null }
 }

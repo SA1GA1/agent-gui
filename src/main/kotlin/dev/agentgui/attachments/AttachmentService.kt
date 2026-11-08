@@ -10,8 +10,7 @@ import java.io.ByteArrayOutputStream
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 
-class AttachmentService {
-    private val root = Path.of(PathManager.getSystemPath(), "agent-gui", "attachments")
+class AttachmentService(private val root: Path = Path.of(PathManager.getSystemPath(), "agent-gui", "attachments")) {
     private val previews = object : LinkedHashMap<String, String>(16, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 16
     }

@@ -40,6 +40,8 @@ class SessionService(private val project: Project) : Disposable {
     private val notices = ArrayDeque<Notice>()
     private var rateLimits = obj {}
     private var lastRatesRefresh = 0L
+    private val quotaPools = linkedMapOf<String, JsonObject>()
+    private var quotaAccount = "local"
     private var models = JsonArray(emptyList())
     private var history = JsonArray(emptyList())
     private var historyCursor: String? = null
@@ -161,6 +163,7 @@ class SessionService(private val project: Project) : Disposable {
     private fun connect(binary: String) {
         require(sessions.values.none { it.state != "idle" }) { "Дождитесь завершения задач перед подключением" }
         generation++; val connectionGeneration = generation
+        quotaPools.clear()
         process?.close(); process = null; warmThread = null; warmTurn = null; warmup.finish(owner); connected = false; signedIn = false; approvals.clear()
         sessions.values.forEach { it.resumed = false; it.stale = true }
         store.binary = binary; status = "Подключение…"; publish()
@@ -244,7 +247,7 @@ class SessionService(private val project: Project) : Disposable {
     private fun event(method: String, p: JsonObject) {
         if (disposed) return
         if (p.string("threadId") == warmThread && warmThread != null) {
-            if (method == "turn/completed") { warmThread = null; warmTurn = null; warmup.finish(owner); runCatching { rates(rpc("account/rateLimits/read")) }; pump(); publish() }
+            if (method == "turn/completed") { process?.rpc?.request("thread/unsubscribe", obj { put("threadId", warmThread) }); warmThread = null; warmTurn = null; warmup.finish(owner); runCatching { rates(rpc("account/rateLimits/read")) }; pump(); publish() }
             return
         }
         val chat = sessions[p.string("threadId")]
@@ -272,18 +275,21 @@ class SessionService(private val project: Project) : Disposable {
         rateLimits = data
         val snapshots = (data["rateLimitsByLimitId"] as? JsonObject)?.values?.mapNotNull { it as? JsonObject }
             ?.takeIf { it.isNotEmpty() } ?: listOfNotNull(data["rateLimits"] as? JsonObject)
+        data.string("accountId")?.let { quotaAccount = it }
         snapshots.forEach { snapshot ->
+            quotaPools[snapshot.string("limitId") ?: "codex"] = snapshot
             notices.addAll(noticeTracker.rates(snapshot))
-            for (key in listOf("primary", "secondary")) {
-                val window = snapshot[key] as? JsonObject ?: continue
-                if (window["windowDurationMins"]?.jsonPrimitive?.longOrNull == 300L) window["resetsAt"]?.jsonPrimitive?.longOrNull?.let { warmup.updateReset(it) }
+        }
+        selectedQuotaPool()?.let { (key, snapshot) ->
+            for (name in listOf("primary", "secondary")) {
+                val window = snapshot[name] as? JsonObject ?: continue
+                if (window["windowDurationMins"]?.jsonPrimitive?.longOrNull == 300L) window["resetsAt"]?.jsonPrimitive?.longOrNull?.let { warmup.updateReset("$quotaAccount/$key", it) }
             }
         }
         while (notices.size > 40) notices.removeFirst()
     }
     private fun quotaWindows(): JsonArray {
-        val snapshots = (rateLimits["rateLimitsByLimitId"] as? JsonObject)?.values?.mapNotNull { it as? JsonObject }
-            ?.takeIf { it.isNotEmpty() } ?: listOfNotNull(rateLimits["rateLimits"] as? JsonObject)
+        val snapshots = quotaPools.values
         return buildJsonArray { snapshots.forEach { snapshot -> for (key in listOf("primary", "secondary")) {
             val window = snapshot[key] as? JsonObject ?: continue
             val reset = window["resetsAt"]?.jsonPrimitive?.longOrNull
@@ -295,14 +301,28 @@ class SessionService(private val project: Project) : Disposable {
             })
         } } }
     }
+    private fun selectedQuotaPool(): Pair<String, JsonObject>? {
+        val defaultModel = models.firstOrNull { it.jsonObject["isDefault"]?.jsonPrimitive?.booleanOrNull == true }?.jsonObject?.string("model")
+        val entry = quotaPools.entries.firstOrNull { defaultModel != null && it.value.string("normalModelSlug") == defaultModel }
+            ?: quotaPools.entries.firstOrNull { it.key == "codex" }
+        return entry?.let { it.key to it.value }
+    }
     private fun warmWindow() {
         if (!connected || !signedIn || warmThread != null) return
-        if (warmup.reserve(owner, java.time.Instant.now().epochSecond) == null) return
+        val selectedKey = selectedQuotaPool()?.first ?: return
+        if (warmup.reserve(owner, java.time.Instant.now().epochSecond, "$quotaAccount/$selectedKey") == null) return
         try {
             rates(rpc("account/rateLimits/read"))
-            val windows = quotaWindows(); if (windows.isEmpty()) { warmup.finish(owner); return }
-            val alreadyStarted = windows.any { val w = it.jsonObject; w["minutes"]?.jsonPrimitive?.longOrNull == 300L && (w["remaining"]?.jsonPrimitive?.doubleOrNull?.let { it < 100 } == true) }
-            if (alreadyStarted) { warmup.finish(owner); publish(); return }
+            val freshData = rateLimits
+            val freshPools = (freshData["rateLimitsByLimitId"] as? JsonObject)?.values?.mapNotNull { it as? JsonObject }?.takeIf { it.isNotEmpty() }
+                ?: listOfNotNull(freshData["rateLimits"] as? JsonObject)
+            val selected = freshPools.firstOrNull { (it.string("limitId") ?: "codex") == selectedKey }
+                ?: run { warmup.finish(owner); return }
+            val window = listOf("primary", "secondary").mapNotNull { selected[it] as? JsonObject }
+                .firstOrNull { it["windowDurationMins"]?.jsonPrimitive?.longOrNull == 300L } ?: run { warmup.finish(owner); return }
+            val used = window["usedPercent"]?.jsonPrimitive?.doubleOrNull ?: run { warmup.finish(owner); return }
+            val reset = window["resetsAt"]?.jsonPrimitive?.longOrNull ?: run { warmup.finish(owner); return }
+            if (reset > java.time.Instant.now().epochSecond && used > 0) { warmup.finish(owner); publish(); return }
             val directory = Path.of(com.intellij.openapi.application.PathManager.getSystemPath(), "agent-gui", "window-warmup")
             Files.createDirectories(directory)
             val model = models.firstOrNull { it.jsonObject["isDefault"]?.jsonPrimitive?.booleanOrNull == true }?.jsonObject ?: models.firstOrNull()?.jsonObject ?: run { warmup.finish(owner); return }
@@ -311,9 +331,10 @@ class SessionService(private val project: Project) : Disposable {
             val thread = rpc("thread/start", obj { put("cwd", directory.toString()); put("modelProvider", "openai"); put("model", model.string("model")); put("ephemeral", true); put("sandbox", "read-only"); put("approvalPolicy", "never") })["thread"]!!.jsonObject
             warmThread = thread.string("id")
             warmup.activity(owner, true)
-            warmTurn = rpc("turn/start", obj { put("threadId", warmThread); put("model", model.string("model")); put("effort", effort); put("input", buildJsonArray { add(obj { put("type", "text"); put("text", "Reply exactly OK. Do not use tools or read files.") }) }) })["turn"]!!.jsonObject.string("id")
+            val request = warmup.launchIfIdle(owner) { process!!.rpc.request("turn/start", obj { put("threadId", warmThread); put("model", model.string("model")); put("effort", effort); put("input", buildJsonArray { add(obj { put("type", "text"); put("text", "Reply exactly OK. Do not use tools or read files.") }) }) }) } ?: run { warmThread = null; warmup.finish(owner); publish(); return }
+            warmTurn = request.join()["turn"]!!.jsonObject.string("id")
             // Hidden housekeeping thread: no conversation message, tab change or success toast.
-        } catch (_: Exception) { warmThread = null; warmTurn = null; warmup.finish(owner) }
+        } catch (_: Exception) { warmThread = null; warmTurn = null; warmup.finish(owner); warmup.activity(owner, queue.isNotEmpty() || sessions.values.any { it.state != "idle" }) }
     }
     private fun serverRequest(request: JsonObject) {
         val method = request.string("method")
