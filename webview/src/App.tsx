@@ -1,45 +1,58 @@
-import {useCallback,useEffect,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {host,type State} from './types';
 import {Composer} from './Composer';
 import {MessageList} from './MessageList';
-const initial:State={type:'state',connected:false,signedIn:false,status:'Подключите установленный Codex CLI',version:'',binary:'',cwd:'',branch:'Нет данных',activeId:'',sessions:[],models:[],history:[],historyCursor:null,skills:[]};
-export function App() {
-  const [state,setState]=useState(initial);
-  const [quotaOpen,setQuotaOpen]=useState(false);
-  const [settings,setSettings]=useState(false);
-  const [history,setHistory]=useState(false);
-  const [query,setQuery]=useState('');
-  const [binary,setBinary]=useState('');
-  const [preview,setPreview]=useState(!window.agentHost);
-  const openHistory=useCallback(()=>{setHistory(true);host('history',{query:''});},[]);
-  useEffect(()=>{
-    const receive=(e:Event)=>{const next=(e as CustomEvent).detail;if(next.type==='state'){setState(next);setBinary(next.binary);}};
-    window.addEventListener('agent-state',receive);host('ready');
-    const focus=()=>host('refresh');window.addEventListener('focus',focus);
-    return ()=>{window.removeEventListener('agent-state',receive);window.removeEventListener('focus',focus);};
-  },[]);
+const initial:State={type:'state',connected:false,signedIn:false,status:'',version:'',binary:'',cwd:'',branch:'',activeId:'',sessions:[],models:[],history:[],historyCursor:null,skills:[]};
+type Prompt={id:string;text:string};
+export function App(){
+  const [state,setState]=useState(initial),[popover,setPopover]=useState<'history'|'quota'|null>(null),[query,setQuery]=useState(''),[prompts,setPrompts]=useState<Prompt[]>([]),[tabMenu,setTabMenu]=useState<string|null>(null),[uiNotices,setUiNotices]=useState<{id:string;text:string;threadId:string}[]>([]),[resumeOpen,setResumeOpen]=useState(false),[conversations,setConversations]=useState<{id:string;name?:string;preview?:string}[]>([]),[resumeCursor,setResumeCursor]=useState<string|null>(null);
+  const activeId=useRef(''),requestId=useRef('');
   const chat=state.sessions.find(s=>s.id===state.activeId);
-  const five=state.quotaWindows?.filter(w=>w.minutes===300 && w.remaining!==null) || [];
-  const fiveRemaining=five.length?Math.min(...five.map(w=>w.remaining!)):null;
-  const active=state.sessions.filter(s=>s.state!=='idle');
-  return <main>
-    <header><div className="brand"><div className="brand-mark">⌘</div><span>Agent GUI <small>CODEX</small></span></div><div className="header-actions"><button className="quota-button" onClick={()=>{setQuotaOpen(!quotaOpen);host('refresh');}}>5 ч: {fiveRemaining===null?'нет данных':`${Math.floor(fiveRemaining)}%`}</button><button title="История разговоров" onClick={openHistory}>◷</button><button title="Настройки" onClick={()=>setSettings(!settings)}>⚙</button></div></header>
-    {quotaOpen && <section className="quota-popup"><div className="section-heading"><strong>Лимиты Codex</strong><button onClick={()=>setQuotaOpen(false)}>×</button></div>{[[300,'5 часов'],[10080,'Неделя']].map(([minutes,label])=>{
-      const windows=state.quotaWindows?.filter(w=>w.minutes===minutes) || [];
-      return <div key={minutes}><strong>{label}</strong>{windows.length?windows.map((w,i)=><p key={i}>{w.name}: {w.remaining===null?'нет данных':`${Math.floor(w.remaining)}% осталось`}<br/><small>Обновление: {w.resetsAt?new Date(w.resetsAt*1000).toLocaleString():'нет данных'}</small></p>):<p>Нет данных</p>}</div>;
-    })}</section>}
-    <nav className="tabs">{state.sessions.filter(s=>s.open).map(s=><div className={s.id===state.activeId?'tab active':'tab'} key={s.id}><button onClick={()=>host('select',{threadId:s.id})} onDoubleClick={()=>{const title=prompt('Название разговора',s.title);if(title)host('rename',{threadId:s.id,title});}}><span className={s.state==='idle'?'tab-dot':'tab-dot busy'}/>{s.title}</button><button className="close-tab" title="Закрыть вкладку; разговор останется в истории" onClick={()=>host('close',{threadId:s.id})}>×</button></div>)}<button title="Новый чат" disabled={!state.connected} onClick={()=>host('new')}>＋</button></nav>
-    {preview && <div className="notice">Предпросмотр интерфейса. Соединение с IDE недоступно.<button onClick={()=>setPreview(false)}>×</button></div>}
-    {settings && <section className="settings"><label>Путь к Codex CLI<input value={binary} placeholder="Автоопределение" onChange={e=>setBinary(e.target.value)}/></label><button className="primary" onClick={()=>host('connect',{binary})}>Подключить</button><p>Используется ваш локальный CLI и его авторизация. Плагин не хранит ключи.</p><label className="warmup-setting"><input type="checkbox" checked={state.autoWindowEnabled??true} onChange={()=>host('toggleWarmup')}/>Автостарт 5-часового окна, когда задачи не выполняются</label><small>{state.version || 'Проверенная версия: 0.163.0'}</small></section>}
-    {history && <section className="history"><div className="section-heading"><strong>История проекта</strong><button onClick={()=>setHistory(false)}>×</button></div><form onSubmit={e=>{e.preventDefault();host('history',{query});}}><input placeholder="Найти разговор…" value={query} onChange={e=>setQuery(e.target.value)}/><button>Найти</button></form>{state.history.map(s=><div className="history-row" key={s.id}><button onClick={()=>{host('resume',{threadId:s.id});setHistory(false);}}>{s.name || s.preview || 'Разговор'}</button><button title="Архивировать" onClick={()=>{host('archive',{threadId:s.id});host('history',{query});}}>⌑</button></div>)}{state.historyCursor && <button onClick={()=>host('history',{query,cursor:state.historyCursor})}>Следующая страница</button>}</section>}
-    {!state.connected ? <section className="welcome"><div className="welcome-icon">⌘</div><h1>Codex в вашем проекте</h1><p>Задавайте вопросы, меняйте код<br/>и продолжайте работу в привычном чате.</p><button className="primary" onClick={()=>host('connect',{binary})}>Подключить Codex</button><button className="text-button" onClick={()=>setSettings(true)}>Указать путь к CLI</button><div className="welcome-features"><span>↵ Многострочный ввод</span><span>▧ Файлы и изображения</span><span>⑂ Ветка и контекст</span></div></section> : !state.signedIn ? <section className="welcome"><h1>Войдите в Codex</h1><p>Вход откроется в вашем браузере.</p><button className="primary" onClick={()=>host('login')}>Войти через ChatGPT</button></section> : !chat ? <section className="welcome"><h1>Начните новый разговор</h1><button className="primary" onClick={()=>host('new')}>Новый чат</button></section> : <>
-      {chat.items.length ? <MessageList key={chat.id} items={chat.items}/> : <section className="empty"><div className="eyebrow">ВАШ ПРОЕКТ. ВАШ CODEX.</div><h1>Что сделаем?</h1><p>Опишите задачу. Добавьте нужные файлы через @<br/>или прикрепите изображение.</p><div className="suggestion-cards">{['Объясни структуру проекта','Помоги найти ошибку','Предложи рефакторинг'].map(t=><button key={t} onClick={()=>host('draft',{threadId:chat.id,text:t})}>{t}<span>↗</span></button>)}</div></section>}
-      {!!chat.approvals.length && <section className="approvals">{chat.approvals.map(a=><div key={a.id}><strong>Codex запрашивает разрешение</strong><p>{a.params.reason || 'Выполнить действие?'}</p>{a.params.command && <pre>{a.params.command}</pre>}{a.params.cwd && <small>{a.params.cwd}</small>}<div className="approval-buttons"><button className="primary" onClick={()=>host('approve',{threadId:chat.id,requestId:String(a.id),decision:'accept'})}>Разрешить один раз</button><button onClick={()=>host('approve',{threadId:chat.id,requestId:String(a.id),decision:'decline'})}>Отклонить</button></div></div>)}</section>}
-      {!!state.notices?.length && <section className="chat-notices">{state.notices.filter(n=>!n.threadId || n.threadId===chat.id).slice(-4).map(n=><div className={`chat-notice ${n.level}`} key={n.id}><span>{n.text}</span><button aria-label="Закрыть уведомление" onClick={()=>host('dismissNotice',{id:n.id})}>×</button></div>)}</section>}
+  const openHistory=useCallback(()=>{setPopover('history');setQuery('');},[]);
+  useEffect(()=>{
+    const receive=(e:Event)=>{const next=(e as CustomEvent).detail;
+      if(next.type==='state'){activeId.current=next.activeId;setState(next);}
+      if(next.type==='promptHistoryResult'&&next.threadId===activeId.current&&next.requestId===requestId.current)setPrompts(next.prompts);
+      if(next.type==='show'&&next.panel==='history')openResume();
+      if(next.type==='historyResult'){setConversations(previous=>[...previous,...next.entries.filter((entry:{id:string})=>!previous.some(p=>p.id===entry.id))]);setResumeCursor(next.cursor||null);}
+    };
+    const openResume=()=>{setResumeOpen(true);setPopover(null);setConversations([]);setResumeCursor(null);host('history',{query:''});};
+    const notice=(e:Event)=>setUiNotices(previous=>[...previous,{...(e as CustomEvent).detail,id:crypto.randomUUID()}].slice(-4));
+    const focus=()=>host('refresh');
+    window.addEventListener('agent-resume',openResume);window.addEventListener('agent-state',receive);window.addEventListener('agent-ui-notice',notice);window.addEventListener('focus',focus);host('ready');
+    return()=>{window.removeEventListener('agent-resume',openResume);window.removeEventListener('agent-state',receive);window.removeEventListener('agent-ui-notice',notice);window.removeEventListener('focus',focus);};
+  },[openHistory]);
+  useEffect(()=>{setPopover(null);setTabMenu(null);setQuery('');setPrompts([]);requestId.current='';},[state.activeId,state.connected]);
+  useEffect(()=>{
+    if(popover!=='history'||!chat)return;
+    const id=crypto.randomUUID();requestId.current=id;
+    setPrompts(chat.items.filter(i=>i.type==='userMessage').map(i=>({id:i.id,text:i.content?.filter(c=>c.type==='text').map(c=>c.text).join('\n')||'Image or attachment'})));
+    host('promptHistory',{threadId:chat.id,requestId:id,query:''});
+    return()=>{requestId.current='';};
+  },[popover,chat?.id]);
+  const five=state.quotaWindows?.filter(w=>w.minutes===300&&w.remaining!==null)||[];
+  const remaining=five.length?Math.min(...five.map(w=>w.remaining!)):null;
+  const contextClass=chat&&!chat.contextStale&&chat.contextPercent!==null?(chat.contextPercent>75?'critical':chat.contextPercent>50?'warning':''):'';
+  const notices=state.notices?.filter(n=>!n.threadId||n.threadId===state.activeId)||[];
+  function reveal(itemId:string){if(!chat)return;host('revealPrompt',{threadId:chat.id,itemId});window.dispatchEvent(new CustomEvent('agent-state',{detail:{type:'revealPrompt',threadId:chat.id,itemId}}));setPopover(null);}
+  return <main onKeyDown={e=>{if(e.key==='Escape'){setPopover(null);setTabMenu(null);setResumeOpen(false);}}}>
+    <header><nav className="tabs" aria-label="Chats">{state.sessions.filter(s=>s.open).map(s=><div className={s.id===state.activeId?'tab active':'tab'} key={s.id}><button onClick={()=>host('select',{threadId:s.id})} onDoubleClick={()=>{const title=prompt('Rename chat',s.title);if(title?.trim())host('rename',{threadId:s.id,title:title.trim()});}} onContextMenu={e=>{e.preventDefault();setTabMenu(s.id);}}>{s.state!=='idle'&&<span className="tab-dot busy"/>}{s.title}</button></div>)}<button className="new-chat" aria-label="New chat" disabled={!state.connected} onClick={()=>host('new')}>+</button></nav></header>
+    {resumeOpen&&<><button className="popover-dismiss" aria-label="Close conversations" onClick={()=>setResumeOpen(false)}/><section className="history-popup popover" role="dialog" aria-label="Resume a conversation"><div className="menu-label">Resume a conversation</div><div className="prompt-results">{conversations.map(c=><button key={c.id} onClick={()=>{host('resume',{threadId:c.id});setResumeOpen(false);}}>{c.name||c.preview||'Conversation'}</button>)}{!conversations.length&&<p className="muted">No conversations found.</p>}{resumeCursor&&<button onClick={()=>host('history',{query:'',cursor:resumeCursor})}>Load more conversations</button>}</div></section></>}
+    {tabMenu&&<><button className="popover-dismiss" aria-label="Close chat menu" onClick={()=>setTabMenu(null)}/><div className="tab-menu popover" role="menu"><button role="menuitem" onClick={()=>{const s=state.sessions.find(s=>s.id===tabMenu);const title=prompt('Rename chat',s?.title);if(title?.trim())host('rename',{threadId:tabMenu,title:title.trim()});setTabMenu(null);}}>Rename chat</button><button role="menuitem" onClick={()=>{host('close',{threadId:tabMenu});setTabMenu(null);}}>Close chat</button></div></>}
+    {(!!notices.length||uiNotices.some(n=>n.threadId===state.activeId)||state.connected&&!state.signedIn)&&<section className="chat-notices" aria-label="Notifications">
+      {notices.map(n=><div className={`chat-notice ${n.level}`} key={n.id}><svg aria-hidden="true" className="notice-symbol" width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M10 2 18 17H2Z" strokeLinejoin="round"/><path d="M10 7v5"/><circle cx="10" cy="14.5" r=".7" fill="currentColor"/></svg><span>{n.text}</span>{n.action==='compact'&&chat&&<button className="notice-action" disabled={chat.state!=='idle'} onClick={()=>host('compact',{threadId:chat.id})}>Compact</button>}<button className="notice-close" aria-label="Dismiss notification" onClick={()=>host('dismissNotice',{id:n.id})}>×</button></div>)}
+      {uiNotices.filter(n=>n.threadId===state.activeId).map(n=><div className="chat-notice error" key={n.id}><span>{n.text}</span><button className="notice-close" aria-label="Dismiss attachment notification" onClick={()=>setUiNotices(all=>all.filter(x=>x.id!==n.id))}>×</button></div>)}
+      {state.connected&&!state.signedIn&&<div className="chat-notice info"><span>Sign in to start using Codex.</span><button onClick={()=>host('login')}>Sign in</button></div>}
+    </section>}
+    {chat?.items.length?<MessageList key={chat.id} threadId={chat.id} items={chat.items}/>:<section className="empty"><h1>{state.connected?'What can I help with?':'Codex'}</h1>{state.connected&&<p>Ask a question or describe a task.</p>}</section>}
+    {state.connected&&chat&&!!chat.approvals.length&&<section className="approvals">{chat.approvals.map(a=><div key={a.id}><strong>Codex needs your approval</strong><p>{a.params.reason||'Allow this action?'}</p>{a.params.command&&<pre>{a.params.command}</pre>}{a.params.cwd&&<small>{a.params.cwd}</small>}<div className="approval-buttons"><button className="primary" onClick={()=>host('approve',{threadId:chat.id,requestId:String(a.id),decision:'accept'})}>Allow once</button><button onClick={()=>host('approve',{threadId:chat.id,requestId:String(a.id),decision:'decline'})}>Decline</button></div></div>)}</section>}
+    {!state.connected?<div className="connect-bottom"><button className="connect-button" onClick={()=>host('connect',{binary:state.binary})}>Connect Codex</button></div>:chat?<>
       <Composer key={chat.id} chat={chat} state={state} onHistory={openHistory}/>
-    </>}
-    {active.length>0 && <div className="tasks">{active.map(s=><button key={s.id} onClick={()=>host('resume',{threadId:s.id})}><span className="activity running"/>{s.title} · {s.state==='queued'?'в очереди':s.state==='compacting'?'сжатие':'в работе'}</button>)}<small>Параллельные чаты меняют файлы в одной папке.</small></div>}
-    <footer><span title={state.cwd}>⑂ {state.branch}</span><span className={`context ${chat?.contextStale?'stale':chat?.contextLevel || ''}`} title={chat?.contextStale?'Данные контекста устарели':'Использование последнего запроса'}>{chat?.contextPercent==null?'Контекст: нет данных':`Контекст: ${chat.contextPercent.toFixed(1)}%${chat.contextStale?' · устарел':''}`}</span></footer>
-    <div className="connection-status"><span className={state.connected?'status-dot connected':'status-dot'}/><span>{state.status}</span></div>
+      <footer><div className="footer-anchor"><button aria-label="History" aria-expanded={popover==='history'} onClick={()=>popover==='history'?setPopover(null):openHistory()}><svg aria-hidden="true" className="clock-icon" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7.5"/><path d="M10 5.5v5l3 2"/></svg> History</button>
+        {popover==='history'&&<><button className="popover-dismiss" aria-label="Close history" onClick={()=>setPopover(null)}/><section className="history-popup popover" aria-label="Prompt history"><div className="menu-label">This chat’s prompts</div><input aria-label="Search prompts" placeholder="Search prompts" value={query} onChange={e=>setQuery(e.target.value)}/><div className="prompt-results">{prompts.filter(p=>p.text.toLowerCase().includes(query.toLowerCase())).map(p=><button key={p.id} onClick={()=>reveal(p.id)}>{p.text}</button>)}{!prompts.some(p=>p.text.toLowerCase().includes(query.toLowerCase()))&&<p className="muted">No prompts found.</p>}</div></section></>}
+      </div><div className="footer-right"><div className="footer-anchor"><button className="quota-button" aria-expanded={popover==='quota'} onClick={()=>{setPopover(popover==='quota'?null:'quota');host('refresh');}}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="10" cy="10" r="7.5"/><path d="M10 2.5V10h7.5"/><path d="M10 2.5A7.5 7.5 0 0 1 17.5 10H10Z" fill="currentColor"/></svg>5h: {remaining===null?'Unknown':`${Math.floor(remaining)}%`}</button>
+        {popover==='quota'&&<><button className="popover-dismiss" aria-label="Close quota" onClick={()=>setPopover(null)}/><section className="quota-popup popover" aria-label="Usage limits"><div className="menu-label">Usage limits</div>{[[300,'5 hours'],[10080,'Weekly']].map(([minutes,label])=>{const windows=state.quotaWindows?.filter(w=>w.minutes===minutes)||[];return <div key={minutes}><strong>{label}</strong>{windows.length?windows.map((w,i)=><p key={i}>{w.name}: {w.remaining===null?'Unknown':`${Math.floor(w.remaining)}% remaining`}<br/><small>Resets: {w.resetsAt===null?'Unknown':new Date(w.resetsAt*1000).toLocaleString()}</small>{w.remaining!==null&&<span className="quota-meter"><span style={{width:`${w.remaining}%`}}/></span>}</p>):<p>Unknown</p>}</div>})}</section></>}
+      </div><span className={`context ${contextClass}`} title={chat.contextStale?'Context estimate is stale':'Context used'}>Context: {chat.contextPercent===null?'Unknown':`${chat.contextPercent.toFixed(1)}%${chat.contextStale?' · stale':''}`}</span></div></footer>
+    </>:<div className="connect-bottom"><button className="connect-button" onClick={()=>host('new')}>New chat</button></div>}
   </main>;
 }
