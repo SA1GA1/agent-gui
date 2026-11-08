@@ -157,3 +157,40 @@ internal fun JScrollPane.subtleScrollbars() {
         })
     }
 }
+
+internal fun browserChatTab(title: String,selected: Boolean,onSelect: ()->Unit,onClose: ()->Unit): JPanel {
+    val panel=object: JPanel(BorderLayout()) {
+        init { isOpaque=false }
+        override fun paintComponent(g: Graphics) {
+            val copy=g.create() as Graphics2D
+            try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
+                if(selected) { copy.color=Color(0x303236); copy.fillRoundRect(0,0,width-1,height-1,10,10) }
+                else { copy.color=Color(0x3B3E44); copy.drawLine(width-1,8,width-1,height-8) }
+            } finally { copy.dispose() }; super.paintComponent(g)
+        }
+    }
+    panel.preferredSize=Dimension(180,32)
+    panel.add(flatButton(title,tooltip=title,action=onSelect).apply { horizontalAlignment=SwingConstants.LEFT; foreground=if(selected) CHAT_FG else CHAT_MUTED; border=EmptyBorder(5,12,5,6); font=font.deriveFont(Font.PLAIN,12f) },BorderLayout.CENTER)
+    if(selected) panel.add(flatButton(icon=ChatIcon("close",CHAT_MUTED,14),tooltip="Close chat",action=onClose).apply { preferredSize=Dimension(26,26); border=EmptyBorder(3,3,3,7) },BorderLayout.EAST)
+    return panel
+}
+internal fun JSlider.roundedReasoningTrack() {
+    isOpaque=false; paintTicks=false; border=EmptyBorder(0,0,0,0); preferredSize=Dimension(270,34)
+    setUI(object: javax.swing.plaf.basic.BasicSliderUI(this) {
+        override fun getThumbSize()=Dimension(18,18)
+        override fun paintTrack(g: Graphics) {
+            val copy=g.create() as Graphics2D
+            try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
+                val y=trackRect.y+trackRect.height/2-6
+                copy.color=Color(0x44474D); copy.fillRoundRect(trackRect.x,y,trackRect.width,12,12,12)
+                val current=xPositionForValue(slider.value)
+                copy.color=Color(0x548CF0); copy.fillRoundRect(trackRect.x,y,(current-trackRect.x).coerceAtLeast(6),12,12,12)
+                for(value in slider.minimum..slider.maximum) { copy.color=Color(0x8B8F97); copy.fillOval(xPositionForValue(value)-1,y+5,3,3) }
+            } finally { copy.dispose() }
+        }
+        override fun paintThumb(g: Graphics) { val copy=g.create() as Graphics2D
+            try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); copy.color=Color(0xF1F2F4); copy.fillOval(thumbRect.x,thumbRect.y,thumbRect.width-1,thumbRect.height-1) } finally { copy.dispose() }
+        }
+        override fun paintFocus(g: Graphics) {}
+    })
+}

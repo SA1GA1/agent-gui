@@ -28,7 +28,7 @@ import javax.swing.event.DocumentListener
 /** Native controls, bounded transcript and batched updates; no browser process or project index. */
 class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)), Disposable {
     private val service=project.service<SessionService>()
-    private val tabs=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
+    private val tabs=transparentPanel(FlowLayout(FlowLayout.LEFT,0,0))
     private val input=ComposerTextArea()
     private val transcript=NativeTranscript()
     private lateinit var inputScroll: JBScrollPane
@@ -181,12 +181,12 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
                 controlsSignature=signature; tabs.removeAll()
                 sessions.filter { it["open"]?.jsonPrimitive?.booleanOrNull!=false || it.string("state")!="idle" }.forEach { session ->
                     val id=session.string("id").orEmpty(); val title=session.string("title") ?: "New chat"
-                    tabs.add(flatButton((if(session.string("state")!="idle") "• " else "")+title.take(24),tooltip=title) { flushDraft(); dispatch("select","threadId" to JsonPrimitive(id)) }.apply {
-                        foreground=if(id==activeId) CHAT_FG else CHAT_MUTED
-                        border=EmptyBorder(7,11,7,11)
-                        (this as HoverButton).apply { outlined=true; selectedChat=id==activeId }
-                        componentPopupMenu=tabMenu(id,title)
-                    })
+                    val titleText=(if(session.string("state")!="idle") "• " else "")+title
+                    val tab=browserChatTab(titleText,id==activeId,
+                        { flushDraft(); dispatch("select","threadId" to JsonPrimitive(id)) },
+                        { flushDraft(); dispatch("close","threadId" to JsonPrimitive(id)) })
+                    val menu=tabMenu(id,title); tab.componentPopupMenu=menu; tab.components.filterIsInstance<JComponent>().forEach { it.componentPopupMenu=menu }
+                    tabs.add(tab)
                 }
                 tabs.add(flatButton(icon=ChatIcon("plus"),tooltip="New chat") { flushDraft(); dispatch("new") }.apply { isEnabled=connected })
             }
@@ -283,7 +283,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         if(values.isEmpty()) return vertical()
         val panel=vertical(); val label=JBLabel(chat()?.string("effort").orEmpty()).apply { foreground=CHAT_FG; alignmentX=Component.CENTER_ALIGNMENT }; panel.add(label)
         panel.add(JSlider(0,values.lastIndex,values.indexOf(chat()?.string("effort")).coerceAtLeast(0)).apply {
-            isOpaque=false; majorTickSpacing=1; snapToTicks=true; paintTicks=true; accessibleContext.accessibleName="Reasoning effort"
+            isOpaque=false; majorTickSpacing=1; snapToTicks=true; roundedReasoningTrack(); accessibleContext.accessibleName="Reasoning effort"
             addChangeListener { label.text=values[value].replaceFirstChar { it.uppercase() }; if(!valueIsAdjusting) dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(values[value])) }
         }); panel.add(JBLabel(values.joinToString("   ") { it.replaceFirstChar { c -> c.uppercase() } }).apply { foreground=CHAT_MUTED; font=font.deriveFont(10f) }); return panel
     }

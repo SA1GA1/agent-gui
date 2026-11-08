@@ -15,7 +15,7 @@ internal class NativeTranscript : JPanel(null), Scrollable {
     private var target: String?=null
     private var empty=""
     private val views=linkedMapOf<String,Bubble>()
-    private class Bubble(val panel: JPanel,val editor: JEditorPane,var signature: String="",var measuredWidth: Int=-1,var height: Int=0)
+    private class Bubble(val panel: JPanel,val editor: JEditorPane,val user: Boolean,var signature: String="",var measuredWidth: Int=-1,var height: Int=0)
     init { background=CHAT_BG; border=EmptyBorder(8,4,12,4) }
     fun showItems(threadId: String,values: JsonArray,emptyText: String) {
         if(thread!=threadId) { thread=threadId; target=null; views.clear(); removeAll() }
@@ -43,12 +43,12 @@ internal class NativeTranscript : JPanel(null), Scrollable {
             val view=views.getOrPut(id) {
                 val editor=JEditorPane("text/html","").apply {
                     isEditable=false; isOpaque=false; border=EmptyBorder(0,0,0,0); foreground=CHAT_FG
-                    putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES,true); font=Font(Font.SANS_SERIF,Font.PLAIN,12)
+                    putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES,true); font=Font(Font.SANS_SERIF,Font.PLAIN,13)
                     addHyperlinkListener { onLink(it) }
                 }
-                val card=RoundedPanel(if(user) Color(0x303236) else Color(0x232528)).apply { border=EmptyBorder(8,11,8,11); add(editor) }
+                val card=RoundedPanel(if(user) Color(0x1B467E) else Color(0x232528)).apply { border=EmptyBorder(10,14,10,14); add(editor) }
                 val holder=transparentPanel(BorderLayout()).apply { border=EmptyBorder(4,if(user) 42 else 0,8,if(user) 0 else 18); add(if(isEmpty) editor else card) }
-                Bubble(holder,editor).also { add(holder) }
+                Bubble(holder,editor,user).also { add(holder) }
             }
             setComponentZOrder(view.panel,index)
             val signature=item.toString()
@@ -60,17 +60,18 @@ internal class NativeTranscript : JPanel(null), Scrollable {
                     "empty" -> "<p style='color:#a8abb1'>${SafeMarkdown.escape(empty)}</p>"
                     else -> ChatPresentation.renderItem(item)
                 }
-                view.editor.text="<html><head><style>body{font-family:sans-serif;font-size:10px;font-weight:normal;color:#e7e8eb;margin:0}p{margin:0 0 7px 0}pre{font-family:monospace;font-size:10px}table.code{border:1px solid #3b3e44}table.code td{padding:7px}a{color:#93bbf7}a.copy{text-decoration:none;color:#abb2be}</style></head><body>$body</body></html>"
+                view.editor.text="<html><head><style>body{font-family:sans-serif;font-size:11px;line-height:1.5;font-weight:normal;color:#e7e8eb;margin:0}p{margin:0 0 9px 0}pre{font-family:monospace;font-size:10px}table.code{border:1px solid #3b3e44}table.code td{padding:7px}a{color:#93bbf7}a.copy{text-decoration:none;color:#abb2be}</style></head><body>$body</body></html>"
             }
         }
         revalidate(); repaint()
     }
     private fun measured(view: Bubble,available: Int): Int {
         if(view.measuredWidth!=available) {
+            view.panel.border=EmptyBorder(if(view.user) 10 else 8,if(view.user) (available*.28).toInt() else 12,if(view.user) 24 else 16,if(view.user) 8 else 12)
             val insets=view.panel.insets
-            val inner=(available-insets.left-insets.right-22).coerceAtLeast(100)
+            val inner=(available-insets.left-insets.right-28).coerceAtLeast(100)
             view.editor.setSize(inner,Short.MAX_VALUE.toInt())
-            view.height=view.editor.preferredSize.height+insets.top+insets.bottom+16
+            view.height=view.editor.preferredSize.height+insets.top+insets.bottom+20
             view.measuredWidth=available
         }
         return view.height

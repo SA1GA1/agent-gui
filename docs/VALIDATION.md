@@ -2,8 +2,8 @@
 
 ## Passed
 
-- `npm test --prefix webview`: 8 UI/logic tests. Keyboard handling, duplicate Enter, slash selection, context warning, text drops, two quota windows and unknown quota display.
-- `./gradlew test`: 20 Kotlin tests. JSONL chunking, out-of-order results, error/closure, approval IDs; context thresholds and last usage; Git branch changes/detached/no-Git; safe Markdown; notification thresholds; idle/reset reservation and competing projects; UTF-8 attachment snapshots, deleted source, binary/size/path rejection and bounded thumbnail dimensions.
+- `npm test --prefix webview`: 19 UI/logic tests. Keyboard handling, duplicate Enter, slash selection, context warning, text drops, two quota windows and unknown quota display.
+- `./gradlew test`: 28 Kotlin tests. JSONL chunking, out-of-order results, error/closure, approval IDs; context thresholds and last usage; Git branch changes/detached/no-Git; safe Markdown; notification thresholds; idle/reset reservation and competing projects; UTF-8 attachment snapshots, deleted source, binary/size/path rejection and bounded thumbnail dimensions.
 - `./gradlew buildPlugin`: installable ZIP at `build/distributions/agent-gui-0.1.0.zip`.
 - `./gradlew verifyPlugin`: compatible with AI-261.25134.95.2612.15822958. Four deprecated interface usages and six experimental platform usages remain; no compatibility errors. The scheduled-for-removal JCEF query overload was replaced.
 - `npm audit`: no known vulnerabilities in the installed dependency tree after updating the build/test tools.
@@ -33,4 +33,16 @@ Independent review found and fixed: automatic compaction releasing a live turn; 
 
 ## Current scope
 
-This is a functional alpha, not completion of every item in the seven-stage source plan. General plugins/MCP installation UI, arbitrary structured server forms, full historical message pagination and final resource audit remain outside this alpha. The native quota dialog intentionally prioritizes functional data over polished UI; UI/UX is a later user-directed stage.
+This is a functional alpha, not completion of every item in the seven-stage source plan. General plugins/MCP installation UI, arbitrary structured server forms, continuous transcript pagination and final resource audit remain outside this alpha. The approved chat UI is now implemented in native Swing and the optional webview: outlined tabs, top notifications, adaptive composer, model/reasoning row, prompt-history and usage popovers. Native animations run only during transitions or visible activity; idle state publication is event driven.
+
+## Approved chat UI pass
+
+- Strict context colors: >50% warning, >75% critical; compact actions appear in threshold notices at 50/75.
+- Prompt-history navigation includes paginated server history and retains a bounded live tail after revealing an old turn. Superseded scans cancel between pages; UI search filters cached prompts.
+- Installed/enabled plugins are discovered from the actual CLI and validated before mention submission.
+- 28 Kotlin tests plus 19 webview tests cover the new navigation, safe rendering/copy links, button initialization, thresholds, stale response guards and separate conversation resumption.
+- Read-only protocol smoke also exercised plugin/list and thread/items/list (30 installed/enabled plugins and a persisted 3-item thread in the test account).
+- Close the sandbox before any Gradle rebuild: sandbox artifacts may share loaded JAR files with build outputs. Replacing those files while the IDE is running can produce transient ZIP/class-loading errors, independent of the packaged plugin.
+
+- Final native visual review confirmed: compact triangle warning with far-right dismiss, rounded message cards, one model/reasoning picker, live usage meters and reset times. Independent read-only review found no additional significant issues in bounded transcript caching, history reveal, tab callbacks or animation lifecycle.
+- Subsequent browser-reference refinements add a filled active chat tab, thin inactive separators, an active-tab close action, blue user bubbles limited to 72% width, consistent message padding and a round reasoning-slider thumb. Approval redesign remains a proposal, not completed functionality.
