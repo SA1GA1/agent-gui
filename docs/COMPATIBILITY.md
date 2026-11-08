@@ -5,7 +5,7 @@ Observed on 2026-10-17, macOS ARM64.
 | Component | Baseline |
 |---|---|
 | Android Studio | AI-261.25134.95.2612.15822958 |
-| IDE runtime | bundled JBR 21.0.10; JCEF present in runtime |
+| IDE runtime | bundled JBR 21.0.10; JCEF absent (verified in running IDE) |
 | Codex CLI | 0.163.0 |
 | Gradle | 9.5.0 wrapper |
 | Kotlin | 2.2.20; Java bytecode target 21 |
@@ -16,7 +16,7 @@ Selected schema snapshots are committed beside this document in `protocol/`.
 Stable methods used: initialize + initialized, account/read, account/login/start,
 model/list, thread/start, thread/list, thread/resume, thread/name/set,
 thread/archive, turn/start, turn/interrupt, thread/compact/start, skills/list,
-mcpServerStatus/list. Unsupported server requests are explicitly rejected.
+account/rateLimits/read, thread/unsubscribe. Unsupported server requests are explicitly rejected.
 No terminal output parsing, private token exchange or direct API key storage.
 
 Usage calculation: `tokenUsage.last.totalTokens / modelContextWindow * 100`.
