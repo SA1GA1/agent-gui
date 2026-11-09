@@ -14,6 +14,19 @@ internal val CHAT_BG = Color(0x1B1C1E)
 internal val CHAT_FG = Color(0xE7E8EB)
 internal val CHAT_MUTED = Color(0xA8ABB1)
 internal val COMPOSER_BG = Color(0x28292C)
+internal fun chatFont(size: Float = 13f): Font = (UIManager.getFont("Label.font") ?: Font(Font.SANS_SERIF,Font.PLAIN,13)).deriveFont(Font.PLAIN,size)
+internal fun applyChatFont(component: Component) {
+    component.font=chatFont((component.font?.size2D ?: 13f).coerceIn(12f,13f))
+    if(component is Container) component.components.forEach(::applyChatFont)
+}
+internal class RoundedTextArea(private val fill: Color, private val separator: Boolean = false) : JBTextArea() {
+    init { isOpaque=false }
+    override fun paintComponent(g: Graphics) {
+        val copy=g.create() as Graphics2D
+        try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); copy.color=fill; copy.fillRoundRect(0,if(separator) 5 else 0,width,height-(if(separator) 5 else 0),12,12); if(separator) { copy.color=Color(0x45474C); copy.drawLine(4,0,width-4,0) } } finally { copy.dispose() }
+        super.paintComponent(g)
+    }
+}
 internal class RoundedPanel(private val fill: Color, private val outline: Color? = null) : JPanel(BorderLayout()) {
     private var appearance=1f
     private var entrance: Timer?=null
@@ -49,9 +62,9 @@ internal class ChatIcon(private val kind: String, private val color: Color = CHA
             p.color=if(c?.isEnabled==false) CHAT_MUTED else color; p.stroke=BasicStroke(1.6f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND)
             when(kind) {
                 "history" -> { p.draw(Ellipse2D.Double(2.5,2.5,15.0,15.0)); p.drawLine(10,5,10,10); p.drawLine(10,10,13,12) }
-                "clip" -> { val path=Path2D.Double(); path.moveTo(17.0,10.0); path.lineTo(9.0,18.0); path.curveTo(5.0,22.0,0.0,16.0,4.0,12.0); path.lineTo(13.0,3.0); path.curveTo(17.0,-1.0,21.0,5.0,17.0,9.0); path.lineTo(9.0,17.0); path.curveTo(7.0,19.0,4.0,16.0,6.0,14.0); path.lineTo(13.0,7.0); p.scale(.86,.86); p.translate(1.0,0.0); p.draw(path) }
+                "clip" -> { val path=Path2D.Double(); path.moveTo(7.0,10.0); path.lineTo(7.0,5.5); path.curveTo(7.0,0.5,15.5,0.5,15.5,5.5); path.lineTo(15.5,13.5); path.curveTo(15.5,21.0,3.5,21.0,3.5,13.5); path.lineTo(3.5,6.0); path.moveTo(7.0,5.5); path.lineTo(7.0,13.5); path.curveTo(7.0,16.5,12.0,16.5,12.0,13.5); path.lineTo(12.0,6.0); p.rotate(.55,10.0,10.0); p.draw(path) }
                 "quota" -> { p.draw(Ellipse2D.Double(2.5,2.5,15.0,15.0)); p.fill(Arc2D.Double(2.5,2.5,15.0,15.0,0.0,90.0,Arc2D.PIE)) }
-                "arrow" -> { p.stroke=BasicStroke(2.2f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND); p.drawLine(10,16,10,4); p.drawLine(10,4,5,9); p.drawLine(10,4,15,9) }
+                "arrow" -> { p.stroke=BasicStroke(1.8f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND); p.drawLine(10,16,10,4); p.drawLine(10,4,5,9); p.drawLine(10,4,15,9) }
                 "chevron" -> { p.drawLine(4,8,10,11); p.drawLine(10,11,16,8) }
                 "stop" -> p.fillRoundRect(5,5,10,10,2,2)
                 "close" -> { p.drawLine(6,6,14,14); p.drawLine(6,14,14,6) }
@@ -72,7 +85,7 @@ internal class HoverButton(text: String, icon: Icon?) : JButton(text,icon) {
         if(kotlin.math.abs(target-hover)<0.025f) { hover=target; (event.source as Timer).stop() }; repaint()
     }
     init {
-        font=font.deriveFont(Font.PLAIN,13f)
+        font=chatFont()
         addMouseListener(object: MouseAdapter() {
             override fun mouseEntered(e: MouseEvent) { target=1f; transition.start() }
             override fun mouseExited(e: MouseEvent) { target=0f; transition.start() }
@@ -118,10 +131,7 @@ internal class SendButton(action: () -> Unit) : JButton() {
     override fun removeNotify() { activity.stop(); super.removeNotify() }
 }
 internal class ComposerTextArea : JBTextArea(1,25) {
-    override fun paintComponent(g: Graphics) {
-        super.paintComponent(g)
-        if(text.isEmpty()) { val copy=g.create(); try { copy.color=CHAT_MUTED; copy.font=font; copy.drawString("Ask Codex to do something…",insets.left+1,insets.top+getFontMetrics(font).ascent+3) } finally { copy.dispose() } }
-    }
+    init { getEmptyText().setText("/ commands and skills · @ files and plugins"); com.intellij.ui.components.TextComponentEmptyText.setupPlaceholderVisibility(this) }
 }
 /** Short fill animation only while this visible popover exists. */
 internal class UsageMeter(private val remaining: Double) : JComponent() {
@@ -165,14 +175,19 @@ internal fun browserChatTab(title: String,selected: Boolean,onSelect: ()->Unit,o
         override fun paintComponent(g: Graphics) {
             val copy=g.create() as Graphics2D
             try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
-                if(selected) { copy.color=Color(0x303236); copy.fillRoundRect(0,0,width-1,height-1,10,10) }
+                if(selected) { copy.color=Color(0x303236); copy.fillRoundRect(0,0,width-1,height-1,12,12) }
                 else { copy.color=Color(0x3B3E44); copy.drawLine(width-1,8,width-1,height-8) }
             } finally { copy.dispose() }; super.paintComponent(g)
         }
     }
-    panel.preferredSize=Dimension(180,32)
-    panel.add(flatButton(title,tooltip=title,action=onSelect).apply { horizontalAlignment=SwingConstants.LEFT; foreground=if(selected) CHAT_FG else CHAT_MUTED; border=EmptyBorder(5,12,5,6); font=font.deriveFont(Font.PLAIN,12f) },BorderLayout.CENTER)
-    if(selected) panel.add(flatButton(icon=ChatIcon("close",CHAT_MUTED,14),tooltip="Close chat",action=onClose).apply { preferredSize=Dimension(26,26); border=EmptyBorder(3,3,3,7) },BorderLayout.EAST)
+    panel.preferredSize=Dimension(144,30)
+    panel.add(flatButton(title,tooltip=title,action=onSelect).apply { horizontalAlignment=SwingConstants.LEFT; foreground=if(selected) CHAT_FG else CHAT_MUTED; border=EmptyBorder(4,9,4,3); font=chatFont(12f) },BorderLayout.CENTER)
+    if(selected) panel.add(object: JButton() {
+        init { preferredSize=Dimension(22,22); isOpaque=false; isContentAreaFilled=false; isBorderPainted=false; isFocusPainted=false; border=EmptyBorder(0,0,0,0); getAccessibleContext().accessibleName="Close chat"; toolTipText="Close chat"; addActionListener { onClose() } }
+        override fun paintComponent(g: Graphics) { val p=g.create() as Graphics2D
+            try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); if(model.isRollover || hasFocus()) { p.color=Color(0x4A4D53); p.fillOval((width-18)/2,(height-18)/2,18,18) }; ChatIcon("close",CHAT_MUTED,12).paintIcon(this,p,(width-12)/2,(height-12)/2) } finally { p.dispose() }
+        }
+    }.apply { isRolloverEnabled=true },BorderLayout.EAST)
     return panel
 }
 internal fun JSlider.roundedReasoningTrack() {

@@ -29,7 +29,7 @@ class NativeApprovalTest {
             panel.list.actionMap.get("choose").actionPerformed(java.awt.event.ActionEvent(panel.list,0,""))
             assertEquals(listOf("acceptForSession"),chosen)
             val renderer=panel.list.cellRenderer.getListCellRendererComponent(panel.list,"A very long permission option that must wrap without hiding the permission scope",0,true,false) as javax.swing.JTextArea
-            assertTrue(renderer.lineWrap); assertTrue(renderer.wrapStyleWord)
+            assertTrue(renderer.lineWrap); assertTrue(renderer.wrapStyleWord); assertEquals("A very long permission option that must wrap without hiding the permission scope",renderer.text)
         }
     }
 

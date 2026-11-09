@@ -26,9 +26,10 @@ import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
 /** Native controls, bounded transcript and batched updates; no browser process or project index. */
-class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)), Disposable {
+class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)), Disposable {
     private val service=project.service<SessionService>()
-    private val tabs=transparentPanel(FlowLayout(FlowLayout.LEFT,0,0))
+    private val tabs=CompactTabs()
+    private val newChat=flatButton(icon=ChatIcon("plus"),tooltip="New chat") { flushDraft(); dispatch("new") }
     private val input=ComposerTextArea()
     private val transcript=NativeTranscript()
     private lateinit var inputScroll: JBScrollPane
@@ -46,9 +47,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     private val bottom=transparentPanel()
     private val connectedBottom=vertical()
     private val model=flatButton("Model ▾") { modelPopup() }
-    private val context=JBLabel("Context —").apply { foreground=CHAT_MUTED; font=font.deriveFont(11f) }
-    private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,20)) { quotaPopup() }
-    private val history=flatButton("History",icon=ChatIcon("history",CHAT_FG,22),tooltip="Prompt history") { promptHistory() }
+    private val context=JBLabel("Context —").apply { foreground=CHAT_MUTED; font=chatFont(12f) }
+    private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,16)) { quotaPopup() }
+    private val history=flatButton("History",icon=ChatIcon("history",CHAT_FG,16),tooltip="Prompt history") { promptHistory() }
     private val send=SendButton { if(customReply()) submitApproval() else if(busy()) dispatch("stop") else submit() }
     private val connect=flatButton("Connect Codex") { dispatch("connect","binary" to JsonPrimitive(state.string("binary").orEmpty())) }
     private var state=obj {}
@@ -103,21 +104,30 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     } }
     init {
         background=CHAT_BG; foreground=CHAT_FG; border=EmptyBorder(8,8,8,8); minimumSize=Dimension(300,300)
-        val tabScroll=JBScrollPane(tabs).apply { border=EmptyBorder(0,0,0,0); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED; verticalScrollBarPolicy=ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER; preferredSize=Dimension(300,38); viewport.background=CHAT_BG; border=BorderFactory.createMatteBorder(0,0,1,0,Color(0x303236)) }
-        add(tabScroll,BorderLayout.NORTH)
-        val center=transparentPanel(BorderLayout(0,8)).apply { add(notices,BorderLayout.NORTH); add(scroll,BorderLayout.CENTER); add(bottom,BorderLayout.SOUTH) }; add(center,BorderLayout.CENTER)
+        val tabScroll=JBScrollPane(tabs).apply { border=EmptyBorder(0,0,0,0); preferredSize=Dimension(240,35); viewport.background=CHAT_BG; hoverHorizontalScroll() }
+        val header=transparentPanel(BorderLayout(6,0)).apply { border=BorderFactory.createMatteBorder(0,0,1,0,Color(0x303236)); add(tabScroll,BorderLayout.CENTER); add(newChat.apply { preferredSize=Dimension(26,30) },BorderLayout.EAST) }
+        add(header,BorderLayout.NORTH)
+        val center=transparentPanel(BorderLayout(0,5)).apply { add(notices,BorderLayout.NORTH); add(scroll,BorderLayout.CENTER); add(bottom,BorderLayout.SOUTH) }; add(center,BorderLayout.CENTER)
         val composerShell=RoundedPanel(COMPOSER_BG,Color(0x3C3E42))
         val composer=transparentPanel(BorderLayout())
         composerShell.add(approval,BorderLayout.NORTH); composerShell.add(composer,BorderLayout.CENTER)
         input.lineWrap=true; input.wrapStyleWord=true; input.background=COMPOSER_BG; input.foreground=CHAT_FG; input.caretColor=CHAT_FG; input.border=EmptyBorder(0,0,0,0)
-        input.toolTipText="Message Codex · / commands and skills · @ files and plugins"
-        input.font=Font(Font.SANS_SERIF,Font.PLAIN,13)
+        input.toolTipText=null; input.accessibleContext.accessibleName="Message Codex"
+        input.font=chatFont()
         inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,140); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars() }
         val composeTop=vertical().apply { add(files); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
-        composer.add(transparentPanel(FlowLayout(FlowLayout.RIGHT,5,0)).apply { border=EmptyBorder(5,0,0,0); add(flatButton(icon=ChatIcon("clip",CHAT_FG,20),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(28,28); border=EmptyBorder(3,3,3,3) }); add(send) },BorderLayout.SOUTH)
+        composer.add(transparentPanel(BorderLayout(4,0)).apply {
+            border=EmptyBorder(3,0,0,0)
+            add(flatButton(icon=ChatIcon("clip",CHAT_FG,19),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(26,26); border=EmptyBorder(2,2,2,2) },BorderLayout.WEST)
+            add(transparentPanel(FlowLayout(FlowLayout.CENTER,0,0)).apply { add(model.apply { font=chatFont(12f); border=EmptyBorder(4,3,4,3) }) },BorderLayout.CENTER)
+            add(send,BorderLayout.EAST)
+        },BorderLayout.SOUTH)
         connectedBottom.add(composerShell)
-        connectedBottom.add(transparentPanel(FlowLayout(FlowLayout.CENTER,0,4)).apply { add(model) })
-        connectedBottom.add(transparentPanel(BorderLayout()).apply { border=BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(1,0,0,0,Color(0x303236)),EmptyBorder(5,0,0,0)); add(transparentPanel(FlowLayout(FlowLayout.LEFT,0,0)).apply { add(history); add(RoundedPanel(CHAT_BG,Color(0x42464C)).apply { border=EmptyBorder(0,3,0,3); add(quota) }) },BorderLayout.WEST); add(context,BorderLayout.EAST) })
+        connectedBottom.add(transparentPanel(BorderLayout()).apply {
+            border=EmptyBorder(5,0,0,0)
+            add(transparentPanel(FlowLayout(FlowLayout.LEFT,8,0)).apply { add(history); add(quota) },BorderLayout.WEST); add(context,BorderLayout.EAST)
+        })
+        applyChatFont(connectedBottom)
         input.document.addDocumentListener(object: DocumentListener {
             override fun insertUpdate(e: DocumentEvent)=changed(); override fun removeUpdate(e: DocumentEvent)=changed(); override fun changedUpdate(e: DocumentEvent)=changed()
             private fun changed() { if(!updating) { if(customReply()) { approvalDrafts.edit(activeId,approvalId!!,input.text) } else { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart() }; inputResize.restart(); updateSend() } }
@@ -208,8 +218,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
                     val menu=tabMenu(id,title); tab.componentPopupMenu=menu; tab.components.filterIsInstance<JComponent>().forEach { it.componentPopupMenu=menu }
                     tabs.add(tab)
                 }
-                tabs.add(flatButton(icon=ChatIcon("plus"),tooltip="New chat") { flushDraft(); dispatch("new") }.apply { isEnabled=connected })
+                tabs.revalidate()
+                SwingUtilities.invokeLater { tabs.doLayout(); tabs.components.getOrNull(sessions.filter { it["open"]?.jsonPrimitive?.booleanOrNull!=false || it.string("state")!="idle" }.indexOfFirst { it.string("id")==activeId })?.let { (it as JComponent).scrollRectToVisible(Rectangle(0,0,it.width,it.height)) } }
             }
+            newChat.isEnabled=connected
             val mode=if(!connected) "connect" else if(!signedIn) "login" else if(chat==null) "new" else "composer"
             if(mode!=bottomMode) { bottomMode=mode; bottom.removeAll(); bottom.add(when(mode) { "connect" -> connect; "new" -> flatButton("New chat") { dispatch("new") }; "login" -> flatButton("Sign in to Codex") { dispatch("login") }; else -> connectedBottom }) }
             input.isEnabled=connected && signedIn && chat!=null
@@ -222,9 +234,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
             model.text=modelName+" · "+(chat?.string("effort")?.replaceFirstChar { it.uppercase() } ?: "Reasoning")+" ▾"; model.isEnabled=!busy()
             val percent=chat?.get("contextPercent")?.jsonPrimitive?.doubleOrNull
             val stale=chat?.get("contextStale")?.jsonPrimitive?.booleanOrNull==true
-            context.text=percent?.let { "Context ${"%.1f".format(java.util.Locale.ROOT,it)}%${if(stale) " · stale" else ""}" } ?: "Context —"
+            context.text=percent?.let { "Context ${it.toInt()}%" } ?: "Context —"
             context.foreground=when { percent==null || stale -> CHAT_MUTED; percent>75 -> Color(0xFF8989); percent>50 -> Color(0xF2C56E); else -> CHAT_MUTED }
-            quota.text="5h "+(quotaWindows().firstOrNull { it["minutes"]?.jsonPrimitive?.longOrNull==300L }?.get("remaining")?.jsonPrimitive?.doubleOrNull?.let { "${it.toInt()}%" } ?: "—")+" ▾"
+            quota.text="5h "+(quotaWindows().firstOrNull { it["minutes"]?.jsonPrimitive?.longOrNull==300L }?.get("remaining")?.jsonPrimitive?.doubleOrNull?.let { "${it.toInt()}%" } ?: "—")
             if(popup?.isVisible==true && popup?.content?.getClientProperty("quota")==true && quotaSignature!=value["quotaWindows"].toString()) {
                 quotaSignature=value["quotaWindows"].toString()
                 (popup?.content?.getComponent(0) as? JPanel)?.let { panel -> val replacement=quotaContent(); panel.removeAll(); replacement.components.forEach { panel.add(it) }; panel.revalidate(); panel.repaint() }
@@ -259,10 +271,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
             val accent=when(notice.string("level")) { "critical" -> Color(0xED6270); "warning" -> Color(0xFFD34F); else -> Color(0x62B5EF) }
             val card=RoundedPanel(fill,accent.darker()).apply { border=EmptyBorder(6,10,6,4) }
             card.add(JBLabel(ChatIcon(if(notice.string("level")=="info") "info" else "warning",accent,23)).apply { border=EmptyBorder(0,0,0,10) },BorderLayout.WEST)
-            val text=JBLabel("<html>${SafeMarkdown.escape(notice.string("text").orEmpty())}</html>").apply { foreground=Color(0xFFF2D7); font=font.deriveFont(Font.PLAIN,12f) }; card.add(text,BorderLayout.CENTER)
+            val text=JBLabel("<html>${SafeMarkdown.escape(notice.string("text").orEmpty())}</html>").apply { foreground=Color(0xFFF2D7); font=chatFont(12f) }; card.add(text,BorderLayout.CENTER)
             card.add(flatButton(icon=ChatIcon("close"),tooltip="Dismiss notification") { dispatch("dismissNotice","id" to notice["id"]!!) }.apply { preferredSize=Dimension(20,20); minimumSize=preferredSize; border=EmptyBorder(0,0,0,0) },BorderLayout.EAST)
             if(notice.string("action")=="compact") card.add(transparentPanel(FlowLayout(FlowLayout.LEFT,0,0)).apply { add(flatButton("Compact context") { dispatch("compact") }.apply { isEnabled=!busy() && state["connected"]?.jsonPrimitive?.booleanOrNull==true }) },BorderLayout.SOUTH)
-            notices.add(card); if(animatedNotices.add(notice.string("id").orEmpty())) card.animateIn(); while(animatedNotices.size>40) animatedNotices.remove(animatedNotices.first()); notices.add(Box.createVerticalStrut(6))
+            applyChatFont(card); notices.add(card); if(animatedNotices.add(notice.string("id").orEmpty())) card.animateIn(); while(animatedNotices.size>40) animatedNotices.remove(animatedNotices.first()); notices.add(Box.createVerticalStrut(4))
         }; notices.isVisible=list.isNotEmpty()
     }
     private fun renderApprovals(chat: JsonObject?) {
@@ -287,7 +299,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
                         dispatch("approve","requestId" to JsonPrimitive(id!!),"decision" to JsonPrimitive(decision))
                     }
                 }
-            }; approval.add(approvalView)
+            }; approval.add(approvalView); applyChatFont(approval)
             if(approvalDrafts.isEditing(activeId,id!!)) replaceInput(approvalDrafts.enter(activeId,id,chat?.string("draft").orEmpty()))
         }
         val live=state["sessions"]?.jsonArray.orEmpty().flatMap { session -> session.jsonObject["approvals"]?.jsonArray.orEmpty().map { session.jsonObject.string("id").orEmpty() to it.jsonObject["id"]!!.jsonPrimitive.content } }.toSet()
@@ -301,6 +313,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     }
     private fun showPopup(owner: JComponent,content: JComponent,width: Int=300) {
         popup?.cancel()
+        applyChatFont(content)
         val container=RoundedPanel(COMPOSER_BG,Color(0x44464B)).apply {
             add(content); preferredSize=Dimension(minOf(width,this@NativeChatPanel.width.coerceAtLeast(280)-16),content.preferredSize.height+20)
         }
@@ -311,24 +324,24 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         if(owner.isShowing) window.show(RelativePoint(owner,Point(0,-container.preferredSize.height-4)))
     }
     private fun modelPopup() {
-        val panel=vertical(); panel.add(JBLabel("Choose model").apply { foreground=CHAT_MUTED })
+        val panel=vertical()
         state["models"]?.jsonArray?.forEach { value -> val item=value.jsonObject
             panel.add(flatButton((item.string("displayName") ?: item.string("model").orEmpty())+if(item.string("model")==chat()?.string("model")) "  ✓" else "") {
                 dispatch("model","model" to item["model"]!!); popup?.cancel()
-            }.apply { horizontalAlignment=SwingConstants.LEFT; maximumSize=Dimension(Int.MAX_VALUE,32) })
+            }.apply { horizontalAlignment=SwingConstants.CENTER; alignmentX=Component.CENTER_ALIGNMENT; preferredSize=Dimension(200,28); minimumSize=Dimension(0,28); maximumSize=Dimension(Int.MAX_VALUE,28) })
         }
-        panel.add(JSeparator().apply { maximumSize=Dimension(Int.MAX_VALUE,1); foreground=Color(0x45484E) }); panel.add(Box.createVerticalStrut(8)); panel.add(reasoningControls()); showPopup(model,panel,320)
+        panel.add(JSeparator().apply { maximumSize=Dimension(Int.MAX_VALUE,1); foreground=Color(0x45484E) }); panel.add(Box.createVerticalStrut(8)); panel.add(reasoningControls()); showPopup(model,panel,240)
     }
     private fun reasoningControls(): JPanel {
         val selected=chat()?.string("model").orEmpty()
         val entry=state["models"]?.jsonArray?.firstOrNull { it.jsonObject.string("model")==selected }?.jsonObject ?: return vertical()
         val values=entry["supportedReasoningEfforts"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject.string("reasoningEffort") }
         if(values.isEmpty()) return vertical()
-        val panel=vertical(); val label=JBLabel(chat()?.string("effort").orEmpty()).apply { foreground=CHAT_FG; alignmentX=Component.CENTER_ALIGNMENT }; panel.add(label)
+        val panel=vertical(); val label=JBLabel(chat()?.string("effort").orEmpty().replaceFirstChar { it.uppercase() }).apply { foreground=CHAT_FG; alignmentX=Component.CENTER_ALIGNMENT }; panel.add(label)
         panel.add(JSlider(0,values.lastIndex,values.indexOf(chat()?.string("effort")).coerceAtLeast(0)).apply {
             isOpaque=false; majorTickSpacing=1; snapToTicks=true; roundedReasoningTrack(); accessibleContext.accessibleName="Reasoning effort"
             addChangeListener { label.text=values[value].replaceFirstChar { it.uppercase() }; if(!valueIsAdjusting) dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(values[value])) }
-        }); panel.add(JBLabel(values.joinToString("   ") { it.replaceFirstChar { c -> c.uppercase() } }).apply { foreground=CHAT_MUTED; font=font.deriveFont(10f) }); return panel
+        }); return panel
     }
     private fun quotaWindows()=state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
     private fun quotaPopup() {
@@ -386,7 +399,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
             cellRenderer=ListCellRenderer { _, value, _, selected, _ ->
                 RoundedPanel(if(selected) Color(0x3A3D43) else COMPOSER_BG).apply {
                     border=EmptyBorder(5,9,5,9)
-                    add(JBLabel(value.title).apply { foreground=CHAT_FG; font=font.deriveFont(Font.PLAIN,12f) },BorderLayout.NORTH)
+                    add(JBLabel(value.title).apply { foreground=CHAT_FG; font=chatFont(12f) },BorderLayout.NORTH)
                     add(JBLabel(value.detail).apply { foreground=CHAT_MUTED; font=font.deriveFont(Font.PLAIN,11f) },BorderLayout.SOUTH)
                 }
             }
