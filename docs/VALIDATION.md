@@ -55,3 +55,13 @@ This is a functional alpha, not completion of every item in the seven-stage sour
 - An independent review identified and verified fixes for web chat-switch draft overwrite, native custom-mode autocomplete and unbounded approval reasons. Follow-up review found no additional actionable issues.
 - A first aggregate run found duplicate generated `ApprovalFlowTest 2.class` files in build outputs. Clean regeneration removed those artifacts; the full clean build and subsequent final test run passed. No source file was removed to suppress a test.
 - This implements command/file permission approvals. Arbitrary structured question forms and JCEF manual testing remain pending. The local fixture verifies protocol routing, not every production backend approval variation.
+
+## Compact controls — 2026-10-18
+
+- 37 Kotlin tests and 25 webview tests cover the current pass. Added three-minute deadline, adaptive tab widths, regular font, selected-tab close construction, actual approval label rendering, toolbar placement/placeholder, transient web notices, integer context and non-pointer reasoning changes.
+- Native IDE visual QA used eight fixture chats: tabs shrink to their minimum then scroll, the plus remains pinned at the right, and the horizontal thumb appears over the tab strip. The approval command and selected option are rounded; the cwd row is absent and a fine separator precedes the custom option. The composer contains attachment, model and send in one row; the footer controls use a common size without a quota border or arrow.
+- Actual native notification expiry was observed: a quota warning present after connection disappeared automatically after 180 seconds, without pressing dismiss or starting another chat task. Expiry uses one next-deadline task on the existing worker. Permission requests are not notifications and do not expire or approve themselves.
+- The native reasoning increment changed Medium to High and persisted it. Web tests cover range changes without pointer/key events so PageUp/PageDown and assistive input do not lose a selection.
+- Visual QA found and fixed an anonymous close-button accessibility initialization error and omitted text in the rounded approval renderer. Each failure was reproduced by a test before correction.
+- The native model menu uses matching preferred/layout row heights; native empty-text rendering replaces manual placeholder painting. The system UI font is used with regular weight, with no additional font download.
+- Optional webview tests/build passed. JCEF manual QA and quantitative resource measurements remain pending; no resource budget is claimed.
