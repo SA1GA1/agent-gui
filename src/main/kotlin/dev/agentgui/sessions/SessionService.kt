@@ -58,6 +58,7 @@ class SessionService(private val project: Project) : Disposable {
     private var publishPending = false
     private val queue = ArrayDeque<Pair<String, JsonObject>>()
     private val approvals = linkedMapOf<String, JsonObject>()
+    private val approvalFlow = ApprovalFlow()
     private val cwd get() = project.basePath ?: error("Open a project directory")
 
     private class Chat(val id: String, var title: String = "New chat") {
@@ -127,7 +128,7 @@ class SessionService(private val project: Project) : Disposable {
                 chat.model = model.string("model")!!; chat.effort = effort; chat.stale = true; persist(); publish()
             }
             "send" -> send(id, m)
-            "stop" -> { val chat = sessions[id] ?: return; if (chat.state == "queued") { queue.removeAll { it.first == id }; chat.state = "idle" } else chat.turnId?.let { turn -> rpc("turn/interrupt", obj { put("threadId", id); put("turnId", turn) }) }; publish() }
+            "stop" -> { approvalFlow.clear(id); val chat = sessions[id] ?: return; if (chat.state == "queued") { queue.removeAll { it.first == id }; chat.state = "idle" } else chat.turnId?.let { turn -> rpc("turn/interrupt", obj { put("threadId", id); put("turnId", turn) }) }; publish() }
             "compact" -> {
                 val chat = sessions[id] ?: return; require(chat.state == "idle") { "Compact is available after the task finishes" }; ensureResumed(chat)
                 require(sessions.values.count { it.state in setOf("running", "compacting") } < 2) { "Two tasks are already running. Please wait for a free slot" }; chat.state = "compacting"; warmup.activity(owner, true); publish()
@@ -135,9 +136,12 @@ class SessionService(private val project: Project) : Disposable {
             }
             "approve" -> {
                 val key = m.string("requestId") ?: return; val request = approvals[key] ?: error("This approval request is no longer active")
-                require(request["params"]?.jsonObject?.string("threadId") == id)
-                val decision = m.string("decision"); require(decision in setOf("accept", "decline", "cancel"))
-                process!!.rpc.respond(request["id"]!!, obj { put("decision", decision) }); approvals.remove(key); publish()
+                val chat = sessions[id] ?: return
+                val decision = m.string("decision"); val text = m.string("text")?.trim().orEmpty()
+                ApprovalFlow.validate(request, id, chat.turnId, decision, text)
+                process!!.rpc.respond(request["id"]!!, obj { put("decision", decision) })
+                if (text.isNotEmpty()) approvalFlow.defer(id, chat.turnId!!, text)
+                approvals.remove(key); publish()
             }
             "attach" -> chooseFiles(id)
             "uploadText" -> {
@@ -170,7 +174,7 @@ class SessionService(private val project: Project) : Disposable {
         require(sessions.values.none { it.state != "idle" }) { "Wait for running tasks before reconnecting" }
         generation++; val connectionGeneration = generation
         quotaPools.clear()
-        process?.close(); process = null; warmThread = null; warmTurn = null; warmup.finish(owner); connected = false; signedIn = false; approvals.clear()
+        process?.close(); process = null; warmThread = null; warmTurn = null; warmup.finish(owner); connected = false; signedIn = false; approvals.clear(); approvalFlow.clear()
         sessions.values.forEach { it.resumed = false; it.stale = true }
         store.binary = binary; status = "Connecting…"; publish()
         val executable = CodexProcess.discover(binary)
@@ -265,6 +269,7 @@ class SessionService(private val project: Project) : Disposable {
         val chat = sessions[p.string("threadId")]
         when (method) {
             "account/login/completed", "account/updated" -> { signedIn = runCatching { rpc("account/read", obj { put("refreshToken", false) })["account"].let { it != null && it != JsonNull } }.getOrDefault(false); status = if (signedIn) "Ready" else "Sign-in incomplete" }
+            "serverRequest/resolved" -> { p["requestId"]?.jsonPrimitive?.content?.let { approvals.remove(it) } }
             "turn/started" -> { chat?.state = "running"; chat?.turnId = (p["turn"] as? JsonObject)?.string("id") }
             "item/started", "item/completed" -> { val item = p["item"] as? JsonObject; if (chat != null && item != null) chat.items[item.string("id") ?: return] = item; if (method == "item/completed" && item?.string("type") == "contextCompaction") { chat?.let { it.state = afterCompaction(it.state); it.stale = true }; pump() } }
             "item/agentMessage/delta" -> if (chat != null) {
@@ -272,7 +277,11 @@ class SessionService(private val project: Project) : Disposable {
                 val old = chat.items[itemId]
                 chat.items[itemId] = obj { put("id", itemId); put("type", "agentMessage"); put("text", old?.string("text").orEmpty() + p.string("delta").orEmpty()) }
             }
-            "turn/completed" -> { chat?.state = "idle"; chat?.turnId = null; val turn = p["turn"] as? JsonObject; if (turn?.get("error") != null && turn["error"] != JsonNull) { status = turn["error"]!!.jsonObject.string("message") ?: "Task failed"; addError(status) }; approvals.entries.removeIf { it.value["params"]?.jsonObject?.string("threadId") == chat?.id }; pump(); refreshBranch() }
+            "turn/completed" -> { chat?.state = "idle"; chat?.turnId = null; val turn = p["turn"] as? JsonObject; if (turn?.get("error") != null && turn["error"] != JsonNull) { status = turn["error"]!!.jsonObject.string("message") ?: "Task failed"; addError(status) }; approvals.entries.removeIf { it.value["params"]?.jsonObject?.string("threadId") == chat?.id }
+                if (chat != null) approvalFlow.completed(chat.id, turn?.string("id"))?.let { text ->
+                    val params = obj { put("threadId", chat.id); put("input", buildJsonArray { add(obj { put("type", "text"); put("text", text) }) }); if (chat.model.isNotEmpty()) put("model", chat.model); if (chat.effort.isNotEmpty()) put("effort", chat.effort) }
+                    chat.state = "queued"; queue.add(chat.id to params)
+                }; pump(); refreshBranch() }
             "thread/tokenUsage/updated" -> if (chat != null) { chat.usage = ContextUsage.from(p["tokenUsage"]!!.jsonObject); chat.stale = false; noticeTracker.context(chat.id, chat.usage.percent)?.let { notices.add(it) } }
             "account/rateLimits/updated" -> rates(p)
             "thread/compacted" -> { chat?.let { it.stale = true; it.state = afterCompaction(it.state) }; pump() }
@@ -452,7 +461,7 @@ class SessionService(private val project: Project) : Disposable {
     private fun refreshBranch() { branch = BranchService.current(cwd) }
     private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)) } }).toString() }
     private fun disconnected(reason: String) {
-        addError(reason); connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear()
+        addError(reason); connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear(); approvalFlow.clear()
         sessions.values.forEach { it.state = "idle"; it.turnId = null; it.resumed = false; it.stale = true }; publish()
     }
     private fun publishBatched() {
