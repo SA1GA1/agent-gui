@@ -45,4 +45,13 @@ This is a functional alpha, not completion of every item in the seven-stage sour
 - Close the sandbox before any Gradle rebuild: sandbox artifacts may share loaded JAR files with build outputs. Replacing those files while the IDE is running can produce transient ZIP/class-loading errors, independent of the packaged plugin.
 
 - Final native visual review confirmed: compact triangle warning with far-right dismiss, rounded message cards, one model/reasoning picker, live usage meters and reset times. Independent read-only review found no additional significant issues in bounded transcript caching, history reveal, tab callbacks or animation lifecycle.
-- Subsequent browser-reference refinements add a filled active chat tab, thin inactive separators, an active-tab close action, blue user bubbles limited to 72% width, consistent message padding and a round reasoning-slider thumb. Approval redesign remains a proposal, not completed functionality.
+- Subsequent browser-reference refinements add a filled active chat tab, thin inactive separators, an active-tab close action, blue user bubbles limited to 72% width, consistent message padding and a round reasoning-slider thumb. The permission approval redesign is implemented and validated below.
+
+## Approved permission composer — 2026-10-17
+
+- 33 Kotlin and 22 webview tests pass. New cases cover session decisions, stale thread/turn rejection, custom text requiring cancellation, exactly-once deferred reply release, independent drafts, explicit keyboard activation, bounded reasons, visible choices and A → B → A custom-draft restoration.
+- Clean test/buildPlugin/verifyPlugin/prepareSandbox succeeded; the verifier remains compatible with the installed Android Studio build (the same four deprecated and six experimental API usages).
+- Native IDE end-to-end test used an isolated local JSONL fixture, without real command execution or model inference. The visible menu stayed attached to one composer, all three options remained visible during custom editing, Escape restored the ordinary draft, and returning restored the custom answer. Sending produced exactly one `cancel` response followed by one text-only `turn/start`; the ordinary draft returned after submission.
+- An independent review identified and verified fixes for web chat-switch draft overwrite, native custom-mode autocomplete and unbounded approval reasons. Follow-up review found no additional actionable issues.
+- A first aggregate run found duplicate generated `ApprovalFlowTest 2.class` files in build outputs. Clean regeneration removed those artifacts; the full clean build and subsequent final test run passed. No source file was removed to suppress a test.
+- This implements command/file permission approvals. Arbitrary structured question forms and JCEF manual testing remain pending. The local fixture verifies protocol routing, not every production backend approval variation.
