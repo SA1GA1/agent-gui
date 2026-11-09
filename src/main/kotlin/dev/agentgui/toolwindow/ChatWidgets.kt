@@ -52,10 +52,11 @@ internal class ChatIcon(private val kind: String, private val color: Color = CHA
                 "clip" -> { val path=Path2D.Double(); path.moveTo(17.0,10.0); path.lineTo(9.0,18.0); path.curveTo(5.0,22.0,0.0,16.0,4.0,12.0); path.lineTo(13.0,3.0); path.curveTo(17.0,-1.0,21.0,5.0,17.0,9.0); path.lineTo(9.0,17.0); path.curveTo(7.0,19.0,4.0,16.0,6.0,14.0); path.lineTo(13.0,7.0); p.scale(.86,.86); p.translate(1.0,0.0); p.draw(path) }
                 "quota" -> { p.draw(Ellipse2D.Double(2.5,2.5,15.0,15.0)); p.fill(Arc2D.Double(2.5,2.5,15.0,15.0,0.0,90.0,Arc2D.PIE)) }
                 "arrow" -> { p.stroke=BasicStroke(2.2f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND); p.drawLine(10,16,10,4); p.drawLine(10,4,5,9); p.drawLine(10,4,15,9) }
+                "chevron" -> { p.drawLine(4,8,10,11); p.drawLine(10,11,16,8) }
                 "stop" -> p.fillRoundRect(5,5,10,10,2,2)
                 "close" -> { p.drawLine(6,6,14,14); p.drawLine(6,14,14,6) }
                 "plus" -> { p.drawLine(10,4,10,16); p.drawLine(4,10,16,10) }
-                "warning" -> { val shape=Path2D.Double(); shape.moveTo(10.0,2.0); shape.lineTo(18.0,17.0); shape.quadTo(18.5,18.0,17.0,18.0); shape.lineTo(3.0,18.0); shape.quadTo(1.5,18.0,2.0,16.5); shape.closePath(); p.draw(shape); p.drawLine(10,7,10,12); p.fillOval(9,14,2,2) }
+                "warning" -> { val shape=Path2D.Double(); shape.moveTo(10.0,2.0); shape.lineTo(18.0,17.0); shape.quadTo(18.5,18.0,17.0,18.0); shape.lineTo(3.0,18.0); shape.quadTo(1.5,18.0,2.0,16.5); shape.closePath(); p.fill(shape); p.color=Color(0x35260A); p.drawLine(10,7,10,12); p.fillOval(9,14,2,2) }
                 "info" -> { p.drawRoundRect(2,2,16,16,7,7); p.drawLine(10,9,10,15); p.fillOval(9,5,2,2) }
             }
         } finally { p.dispose() }

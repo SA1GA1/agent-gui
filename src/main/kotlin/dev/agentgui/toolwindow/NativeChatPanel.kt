@@ -36,6 +36,11 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     private val scroll=JBScrollPane(transcript).apply { border=EmptyBorder(0,0,0,0); viewport.background=CHAT_BG; subtleScrollbars() }
     private val notices=vertical()
     private val approval=vertical()
+    private val approvalDrafts=ApprovalDrafts()
+    private var approvalView: ApprovalPanel?=null
+    private var approvalId: String?=null
+    private var decisionPending=false
+    private fun customReply()=approvalId?.let { approvalDrafts.isEditing(activeId,it) }==true
     private val files=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
     private val selections=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
     private val bottom=transparentPanel()
@@ -44,7 +49,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     private val context=JBLabel("Context —").apply { foreground=CHAT_MUTED; font=font.deriveFont(11f) }
     private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,20)) { quotaPopup() }
     private val history=flatButton("History",icon=ChatIcon("history",CHAT_FG,22),tooltip="Prompt history") { promptHistory() }
-    private val send=SendButton { if(busy()) dispatch("stop") else submit() }
+    private val send=SendButton { if(customReply()) submitApproval() else if(busy()) dispatch("stop") else submit() }
     private val connect=flatButton("Connect Codex") { dispatch("connect","binary" to JsonPrimitive(state.string("binary").orEmpty())) }
     private var state=obj {}
     private var activeId=""
@@ -101,31 +106,36 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         val tabScroll=JBScrollPane(tabs).apply { border=EmptyBorder(0,0,0,0); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED; verticalScrollBarPolicy=ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER; preferredSize=Dimension(300,38); viewport.background=CHAT_BG; border=BorderFactory.createMatteBorder(0,0,1,0,Color(0x303236)) }
         add(tabScroll,BorderLayout.NORTH)
         val center=transparentPanel(BorderLayout(0,8)).apply { add(notices,BorderLayout.NORTH); add(scroll,BorderLayout.CENTER); add(bottom,BorderLayout.SOUTH) }; add(center,BorderLayout.CENTER)
-        val composer=RoundedPanel(COMPOSER_BG,Color(0x3C3E42))
+        val composerShell=RoundedPanel(COMPOSER_BG,Color(0x3C3E42))
+        val composer=transparentPanel(BorderLayout())
+        composerShell.add(approval,BorderLayout.NORTH); composerShell.add(composer,BorderLayout.CENTER)
         input.lineWrap=true; input.wrapStyleWord=true; input.background=COMPOSER_BG; input.foreground=CHAT_FG; input.caretColor=CHAT_FG; input.border=EmptyBorder(0,0,0,0)
         input.toolTipText="Message Codex · / commands and skills · @ files and plugins"
         input.font=Font(Font.SANS_SERIF,Font.PLAIN,13)
         inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,140); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars() }
         val composeTop=vertical().apply { add(files); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
         composer.add(transparentPanel(FlowLayout(FlowLayout.RIGHT,5,0)).apply { border=EmptyBorder(5,0,0,0); add(flatButton(icon=ChatIcon("clip",CHAT_FG,20),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(28,28); border=EmptyBorder(3,3,3,3) }); add(send) },BorderLayout.SOUTH)
-        connectedBottom.add(approval); connectedBottom.add(composer)
+        connectedBottom.add(composerShell)
         connectedBottom.add(transparentPanel(FlowLayout(FlowLayout.CENTER,0,4)).apply { add(model) })
         connectedBottom.add(transparentPanel(BorderLayout()).apply { border=BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(1,0,0,0,Color(0x303236)),EmptyBorder(5,0,0,0)); add(transparentPanel(FlowLayout(FlowLayout.LEFT,0,0)).apply { add(history); add(RoundedPanel(CHAT_BG,Color(0x42464C)).apply { border=EmptyBorder(0,3,0,3); add(quota) }) },BorderLayout.WEST); add(context,BorderLayout.EAST) })
         input.document.addDocumentListener(object: DocumentListener {
             override fun insertUpdate(e: DocumentEvent)=changed(); override fun removeUpdate(e: DocumentEvent)=changed(); override fun changedUpdate(e: DocumentEvent)=changed()
-            private fun changed() { if(!updating) { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart(); inputResize.restart(); updateSend() } }
+            private fun changed() { if(!updating) { if(customReply()) { approvalDrafts.edit(activeId,approvalId!!,input.text) } else { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart() }; inputResize.restart(); updateSend() } }
         })
-        input.addCaretListener { if(!updating) autocomplete.restart() }
+        input.addCaretListener { if(!updating && !customReply()) autocomplete.restart() }
         input.addFocusListener(object: FocusAdapter() { override fun focusGained(e: FocusEvent?) { dispatch("refresh") } })
         input.addInputMethodListener(object: InputMethodListener {
             override fun inputMethodTextChanged(e: InputMethodEvent) { input.putClientProperty("composing",(e.text?.endIndex ?: 0)>e.committedCharacterCount) }
             override fun caretPositionChanged(e: InputMethodEvent) {}
         })
         bind(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,0),"send") {
-            if(input.getClientProperty("composing")!=true) { if(completionOpen) completionList?.selectedValue?.action?.invoke() else if(!busy()) submit() }
+            if(input.getClientProperty("composing")!=true) { if(completionOpen) completionList?.selectedValue?.action?.invoke() else if(customReply()) submitApproval() else if(!busy() && approvalId==null) submit() }
         }
         input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,InputEvent.SHIFT_DOWN_MASK),"insert-break")
-        bind(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE,0),"dismiss") { hideCompletions() }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE,0),"dismiss") {
+            hideCompletions()
+            if(customReply()) { val text=approvalDrafts.leave(activeId,approvalId!!); replaceInput(text.orEmpty()); updateSend(); approvalView?.focusCustom() }
+        }
         for((key,delta) in listOf(KeyEvent.VK_DOWN to 1,KeyEvent.VK_UP to -1)) {
             val stroke=KeyStroke.getKeyStroke(key,0); val previous=input.inputMap.get(stroke)
             bind(stroke,"completion$key") { val list=completionList
@@ -158,9 +168,19 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         val height=(rows*metrics.height+6).coerceIn(24,140)
         if(inputScroll.preferredSize.height!=height) { inputScroll.preferredSize=Dimension(260,height); connectedBottom.revalidate() }
     }
-    private fun updateSend() { send.working=busy(); send.isEnabled=state["connected"]?.jsonPrimitive?.booleanOrNull==true && (busy() || state["signedIn"]?.jsonPrimitive?.booleanOrNull==true && chat()!=null && (input.text.isNotBlank() || chat()?.get("files")?.jsonArray?.isNotEmpty()==true)) }
+    private fun updateSend() {
+        send.working=busy() && !customReply()
+        send.isEnabled=!decisionPending && state["connected"]?.jsonPrimitive?.booleanOrNull==true && (customReply() || busy() || approvalId==null && state["signedIn"]?.jsonPrimitive?.booleanOrNull==true && chat()!=null && (input.text.isNotBlank() || chat()?.get("files")?.jsonArray?.isNotEmpty()==true))
+    }
+    private fun replaceInput(text: String) { val previous=updating; updating=true; input.text=text; updating=previous; inputResize.restart() }
+    private fun submitApproval() {
+        val id=approvalId ?: return
+        if(decisionPending) return
+        decisionPending=true; updateSend()
+        dispatch("approve","requestId" to JsonPrimitive(id),"decision" to JsonPrimitive("cancel"),"text" to JsonPrimitive(input.text.trim()))
+    }
     private fun submit() {
-        if(!send.isEnabled || busy()) return
+        if(!send.isEnabled || busy() || approvalId!=null) return
         when(input.text.trim()) {
             "/model" -> { modelPopup(); return }; "/resume" -> { resumeHistory(); return }; "/settings" -> { settings(); return }
         }
@@ -172,7 +192,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         try {
             val old=activeId; state=value; activeId=value.string("activeId").orEmpty()
             val chat=chat(); val switched=old!=activeId
-            if(switched) { popup?.cancel(); hideCompletions(); pendingPromptRequest=null; pendingReveal=null; selectedSkill=null; selectedPlugin=null; renderSelections() }
+            if(switched) { approvalId=null; approvalsSignature=""; popup?.cancel(); hideCompletions(); pendingPromptRequest=null; pendingReveal=null; selectedSkill=null; selectedPlugin=null; renderSelections() }
             val connected=value["connected"]?.jsonPrimitive?.booleanOrNull==true
             val signedIn=value["signedIn"]?.jsonPrimitive?.booleanOrNull==true
             val sessions=value["sessions"]?.jsonArray.orEmpty().map { it.jsonObject }
@@ -193,8 +213,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
             val mode=if(!connected) "connect" else if(!signedIn) "login" else if(chat==null) "new" else "composer"
             if(mode!=bottomMode) { bottomMode=mode; bottom.removeAll(); bottom.add(when(mode) { "connect" -> connect; "new" -> flatButton("New chat") { dispatch("new") }; "login" -> flatButton("Sign in to Codex") { dispatch("login") }; else -> connectedBottom }) }
             input.isEnabled=connected && signedIn && chat!=null
+            renderApprovals(chat)
             val draft=chat?.string("draft").orEmpty()
-            if(switched || (draft!=latestDraft && (!input.hasFocus() || busy() && draft.isEmpty()))) { input.text=draft; if(draft.isEmpty()) { selectedSkill=null; selectedPlugin=null; renderSelections() } }
+            if(!customReply() && (switched || (draft!=latestDraft && (!input.hasFocus() || busy() && draft.isEmpty())))) { input.text=draft; if(draft.isEmpty()) { selectedSkill=null; selectedPlugin=null; renderSelections() } }
             latestDraft=draft; inputResize.restart()
             val catalog=value["models"]?.jsonArray.orEmpty().map { it.jsonObject }
             val modelName=catalog.firstOrNull { it.string("model")==chat?.string("model") }?.string("displayName") ?: chat?.string("model") ?: "Model"
@@ -208,7 +229,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
                 quotaSignature=value["quotaWindows"].toString()
                 (popup?.content?.getComponent(0) as? JPanel)?.let { panel -> val replacement=quotaContent(); panel.removeAll(); replacement.components.forEach { panel.add(it) }; panel.revalidate(); panel.repaint() }
             }
-            updateSend(); renderFiles(chat); renderNotices(value); renderApprovals(chat)
+            updateSend(); renderFiles(chat); renderNotices(value)
             val items=chat?.get("items")?.jsonArray ?: JsonArray(emptyList())
             val next="$activeId:$items:$mode"
             if(next!=rendered) {
@@ -234,7 +255,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         val list=value["notices"]?.jsonArray.orEmpty().map { it.jsonObject }.filter { it.string("threadId").let { id -> id==null || id==activeId } }.takeLast(3)
         val next=list.toString()+busy(); if(next==noticesSignature) return; noticesSignature=next; notices.removeAll()
         list.forEach { notice ->
-            val fill=when(notice.string("level")) { "critical" -> Color(0x57282C); "warning" -> Color(0x594626); else -> Color(0x233D5B) }
+            val fill=when(notice.string("level")) { "critical" -> Color(0x57282C); "warning" -> Color(0x71531D); else -> Color(0x233D5B) }
             val accent=when(notice.string("level")) { "critical" -> Color(0xED6270); "warning" -> Color(0xFFD34F); else -> Color(0x62B5EF) }
             val card=RoundedPanel(fill,accent.darker()).apply { border=EmptyBorder(6,10,6,4) }
             card.add(JBLabel(ChatIcon(if(notice.string("level")=="info") "info" else "warning",accent,23)).apply { border=EmptyBorder(0,0,0,10) },BorderLayout.WEST)
@@ -245,11 +266,33 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
         }; notices.isVisible=list.isNotEmpty()
     }
     private fun renderApprovals(chat: JsonObject?) {
-        val next=chat?.get("approvals").toString(); if(next==approvalsSignature) return; approvalsSignature=next; approval.removeAll()
-        chat?.get("approvals")?.jsonArray?.forEach { value -> val request=value.jsonObject; val params=request["params"]!!.jsonObject
-            val card=RoundedPanel(Color(0x233D5B)); card.add(JBLabel("<html>Allow ${SafeMarkdown.escape(params.string("command") ?: params.string("reason") ?: "file changes")}?</html>").apply { foreground=CHAT_FG },BorderLayout.CENTER)
-            card.add(transparentPanel(FlowLayout(FlowLayout.LEFT)).apply { for((label,decision) in listOf("Allow once" to "accept","Decline" to "decline")) add(flatButton(label) { dispatch("approve","requestId" to JsonPrimitive(request["id"]!!.jsonPrimitive.content),"decision" to JsonPrimitive(decision)) }) },BorderLayout.SOUTH); approval.add(card)
-        }; approval.isVisible=approval.componentCount>0
+        val requests=chat?.get("approvals")?.jsonArray.orEmpty()
+        val request=requests.firstOrNull()?.jsonObject
+        val id=request?.get("id")?.jsonPrimitive?.content
+        val next=activeId+":"+requests.toString()
+        if(next==approvalsSignature) { decisionPending=false; return }
+        val previous=approvalId
+        if(previous!=null && previous!=id) approvalDrafts.resolve(activeId,previous)?.let { replaceInput(it) }
+        approvalsSignature=next; approvalId=id; decisionPending=false; approval.removeAll(); approvalView=null
+        if(request!=null) {
+            val itemId=request["params"]?.jsonObject?.string("itemId")
+            val changes=chat?.get("items")?.jsonArray.orEmpty().firstOrNull { it.jsonObject.string("id")==itemId }?.jsonObject?.get("changes")?.jsonArray.orEmpty().joinToString("\n") { it.jsonObject.string("path").orEmpty() }
+            approvalView=ApprovalPanel(request,changes) { decision ->
+                if(!decisionPending && approvalId==id) {
+                    if(decision=="cancel") {
+                        flushDraft(); hideCompletions()
+                        replaceInput(approvalDrafts.enter(activeId,id!!,input.text)); input.requestFocusInWindow(); updateSend()
+                    } else {
+                        decisionPending=true; updateSend()
+                        dispatch("approve","requestId" to JsonPrimitive(id!!),"decision" to JsonPrimitive(decision))
+                    }
+                }
+            }; approval.add(approvalView)
+            if(approvalDrafts.isEditing(activeId,id!!)) replaceInput(approvalDrafts.enter(activeId,id,chat?.string("draft").orEmpty()))
+        }
+        val live=state["sessions"]?.jsonArray.orEmpty().flatMap { session -> session.jsonObject["approvals"]?.jsonArray.orEmpty().map { session.jsonObject.string("id").orEmpty() to it.jsonObject["id"]!!.jsonPrimitive.content } }.toSet()
+        approvalDrafts.retain(live)
+        approval.isVisible=request!=null
     }
     private fun tabMenu(id: String,title: String)=JPopupMenu().apply {
         add(JMenuItem("Rename chat").apply { addActionListener { JOptionPane.showInputDialog(this@NativeChatPanel,"Chat title",title)?.let { dispatch("rename","threadId" to JsonPrimitive(id),"title" to JsonPrimitive(it)) } } })
@@ -320,7 +363,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,8)),
     private fun filterHistory() { val query=historyQuery?.text.orEmpty(); historyList?.setListData(historyPrompts.filter { it.second.contains(query,true) }.asReversed().map { Prompt(it.first,it.second) }.toTypedArray()); if((historyList?.model?.size ?: 0)>0) historyList?.selectedIndex=0 }
     private fun reveal() { val id=pendingReveal ?: return; pendingReveal=null; SwingUtilities.invokeLater { if(!disposed) transcript.revealMessage(id) } }
     private fun complete() {
-        if(disposed || !input.hasFocus() || input.getClientProperty("composing")==true) return
+        if(disposed || customReply() || !input.hasFocus() || input.getClientProperty("composing")==true) return
         val token=ChatPresentation.token(input.text,input.caretPosition)
         if(token==null) { hideCompletions(); return }
         if(token!=completionToken) { completionFiles=emptyList(); pendingFileRequest=null }
