@@ -71,3 +71,38 @@ it('keeps model and reasoning behind one composer button',async()=>{
  await userEvent.click(screen.getByRole('button',{name:'Model'}));
  expect(screen.getByRole('slider',{name:'Reasoning effort'})).toBeTruthy();
 });
+
+it('keeps options visible in the shared composer and restores ordinary draft after custom send',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ const pending:Chat={...chat,state:'running',draft:'Keep this ordinary draft',approvals:[{id:42,method:'item/commandExecution/requestApproval',params:{threadId:'a',command:'./gradlew test'}}]};
+ const {rerender}=render(<Composer chat={pending} state={state} onHistory={()=>{}}/>);
+ const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));
+ const input=screen.getByRole('textbox');expect((input as HTMLTextAreaElement).value).toBe('');
+ await user.type(input,'Review only');
+ expect(screen.getByRole('button',{name:/1\. Allow once/})).toBeTruthy();
+ expect(calls.filter(c=>c.type==='draft')).toHaveLength(0);
+ await user.keyboard('{Escape}');expect((input as HTMLTextAreaElement).value).toBe('Keep this ordinary draft');
+ await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));expect((input as HTMLTextAreaElement).value).toBe('Review only');
+ await user.click(screen.getByRole('button',{name:'Send'}));expect(calls.at(-1)).toEqual({type:'approve',threadId:'a',requestId:'42',decision:'cancel',text:'Review only'});
+ rerender(<Composer chat={{...pending,approvals:[],state:'running'}} state={state} onHistory={()=>{}}/>);
+ expect((input as HTMLTextAreaElement).value).toBe('Keep this ordinary draft');
+});
+
+it('moves approval selection with arrows without consenting until Enter',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ render(<Composer chat={{...chat,state:'running',approvals:[{id:9,method:'item/fileChange/requestApproval',params:{threadId:'a',reason:'Apply changes?'}}]}} state={state} onHistory={()=>{}}/>);
+ const first=screen.getByRole('button',{name:/1\. Allow once/});first.focus();
+ fireEvent.keyDown(first,{key:'ArrowDown'});expect(calls.some(c=>c.type==='approve')).toBe(false);
+ fireEvent.keyDown(document.activeElement!,{key:'Enter'});
+ expect(calls.at(-1)).toMatchObject({type:'approve',requestId:'9',decision:'acceptForSession'});
+});
+
+it('restores the custom reply rather than the ordinary draft when returning to a chat',async()=>{
+ window.agentHost=()=>{};
+ const a:Chat={...chat,state:'running',draft:'ordinary A',approvals:[{id:42,method:'item/commandExecution/requestApproval',params:{threadId:'a'}}]};
+ const b:Chat={...chat,id:'b',draft:'ordinary B'};
+ const {rerender}=render(<Composer chat={a} state={state} onHistory={()=>{}}/>);
+ const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));await user.type(screen.getByRole('textbox'),'custom A');
+ rerender(<Composer chat={b} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('ordinary B');
+ rerender(<Composer chat={a} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('custom A');
+});
