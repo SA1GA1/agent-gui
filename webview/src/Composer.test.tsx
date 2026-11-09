@@ -106,3 +106,18 @@ it('restores the custom reply rather than the ordinary draft when returning to a
  rerender(<Composer chat={b} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('ordinary B');
  rerender(<Composer chat={a} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('custom A');
 });
+
+it('keeps model picker inside the composer toolbar and uses a slash placeholder',()=>{
+ window.agentHost=()=>{};render(<Composer chat={chat} state={state} onHistory={()=>{}}/>);
+ const field=screen.getByRole('textbox');expect(field.getAttribute('placeholder')).toMatch(/^\//);expect(field.getAttribute('title')).toBeNull();
+ expect(screen.getByRole('button',{name:'Model'}).closest('.composer-toolbar')).not.toBeNull();
+});
+
+it('saves reasoning changes made without a pointer or a specific key event',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ const models=[{...state.models[0],supportedReasoningEfforts:[{reasoningEffort:'low',description:''},{reasoningEffort:'high',description:''}]}];
+ render(<Composer chat={chat} state={{...state,models}} onHistory={()=>{}}/>);
+ await userEvent.click(screen.getByRole('button',{name:'Model'}));
+ fireEvent.change(screen.getByRole('slider',{name:'Reasoning effort'}),{target:{value:'1'}});
+ expect(calls.at(-1)).toEqual({type:'model',threadId:'a',model:'m',effort:'high'});
+});

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import {afterEach,expect,it} from 'vitest';
+import {afterEach,expect,it,vi} from 'vitest';
 import {act,cleanup,render,screen} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {App} from './App';
@@ -68,4 +68,16 @@ it('loads prompt history once and filters subsequent search locally',async()=>{
  const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);render(<App/>);update(snapshot);
  const user=userEvent.setup();await user.click(screen.getByRole('button',{name:'History'}));await user.type(screen.getByRole('textbox',{name:'Search prompts'}),'first');
  expect(calls.filter(c=>c.type==='promptHistory')).toHaveLength(1);expect(screen.getByRole('button',{name:'First prompt'})).toBeTruthy();
+});
+
+it('expires a local notification after three minutes and shows integer context without stale text',()=>{
+ vi.useFakeTimers();window.agentHost=()=>{};
+ try {
+  render(<App/>);update({...snapshot,sessions:[{...chat,contextPercent:51.7,contextStale:true}]});
+  expect(screen.getByText('Context: 51%')).toBeTruthy();expect(screen.queryByText(/stale/)).toBeNull();
+  act(()=>window.dispatchEvent(new CustomEvent('agent-ui-notice',{detail:{threadId:'a',text:'Temporary notice'}})));
+  expect(screen.getByText('Temporary notice')).toBeTruthy();
+  act(()=>vi.advanceTimersByTime(179999));expect(screen.getByText('Temporary notice')).toBeTruthy();
+  act(()=>vi.advanceTimersByTime(1));expect(screen.queryByText('Temporary notice')).toBeNull();
+ } finally {cleanup();vi.useRealTimers();}
 });
