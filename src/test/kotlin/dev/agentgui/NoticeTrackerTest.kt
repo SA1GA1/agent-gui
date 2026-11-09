@@ -1,4 +1,5 @@
 package dev.agentgui
+import dev.agentgui.notifications.Notice
 import dev.agentgui.notifications.NoticeTracker
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Assertions.*
@@ -29,4 +30,11 @@ class NoticeTrackerTest {
         assertEquals(1,tracker.rates(snapshot(50,2000000300L)).size)
         assertTrue(tracker.rates(buildJsonObject {}).isEmpty())
     }
+    @Test fun `notice expires after three minutes without extending on redraw`() {
+        val notice=Notice("Warning", "warning", createdAt=1000)
+        assertFalse(notice.expired(180999))
+        assertTrue(notice.expired(181000))
+        assertEquals(181000L,notice.expiresAt)
+    }
+
 }

@@ -5,8 +5,10 @@ import kotlinx.serialization.json.*
 import java.time.Instant
 import java.util.UUID
 
-data class Notice(val text: String, val level: String, val threadId: String? = null, val id: String = UUID.randomUUID().toString(), val action: String? = null) {
-    fun json() = buildJsonObject { put("id", id); put("text", text); put("level", level); threadId?.let { put("threadId", it) }; action?.let { put("action", it) } }
+data class Notice(val text: String, val level: String, val threadId: String? = null, val id: String = UUID.randomUUID().toString(), val action: String? = null, val createdAt: Long = System.currentTimeMillis()) {
+    val expiresAt get() = createdAt + 180_000L
+    fun expired(now: Long = System.currentTimeMillis()) = now >= expiresAt
+    fun json() = buildJsonObject { put("id", id); put("expiresAt", expiresAt); put("text", text); put("level", level); threadId?.let { put("threadId", it) }; action?.let { put("action", it) } }
 }
 /** Pure threshold crossing logic. Neither billing dates nor unknown quotas are inferred. */
 class NoticeTracker {
@@ -16,7 +18,7 @@ class NoticeTracker {
         if (percent == null || !percent.isFinite()) return null
         val before = previousContext.put(threadId, percent) ?: 0.0
         val crossed = listOf(50.0, 75.0).lastOrNull { before < it && percent >= it } ?: return null
-        return Notice("Context is ${"%.1f".format(java.util.Locale.ROOT, percent)}% full. Compact to make room after the current task.", if (crossed >= 75) "critical" else "warning", threadId, action = "compact")
+        return Notice("Context is ${percent.toInt()}% full. Compact to make room after the current task.", if (crossed >= 75) "critical" else "warning", threadId, action = "compact")
     }
     fun rates(snapshot: JsonObject): List<Notice> = buildList {
         val limit = snapshot.string("limitId") ?: "codex"

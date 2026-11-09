@@ -38,6 +38,8 @@ class SessionService(private val project: Project) : Disposable {
     private var warmTurn: String? = null
     private val noticeTracker = NoticeTracker()
     private val notices = ArrayDeque<Notice>()
+    private var noticeExpiry: java.util.concurrent.ScheduledFuture<*>? = null
+    private var noticeExpiryAt: Long? = null
     private var rateLimits = obj {}
     private var lastRatesRefresh = 0L
     private val quotaPools = linkedMapOf<String, JsonObject>()
@@ -471,6 +473,13 @@ class SessionService(private val project: Project) : Disposable {
     }
     private fun publish() {
         if (disposed) return
+        val now = System.currentTimeMillis()
+        notices.removeAll { it.expired(now) }
+        val next = notices.minOfOrNull { it.expiresAt }
+        if (next != noticeExpiryAt) {
+            noticeExpiry?.cancel(false); noticeExpiryAt = next
+            noticeExpiry = next?.let { deadline -> worker.schedule({ noticeExpiryAt = null; noticeExpiry = null; if (!disposed) publish() }, (deadline - now).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
+        }
         warmup.activity(owner, warmThread != null || queue.isNotEmpty() || sessions.values.any { it.state != "idle" })
         listener?.invoke(obj {
             put("notices", JsonArray(notices.toList().takeLast(40).map { it.json() })); put("quotaWindows", quotaWindows()); put("autoWindowEnabled", warmup.state.enabled)
