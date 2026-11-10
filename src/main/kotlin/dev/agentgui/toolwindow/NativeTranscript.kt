@@ -46,7 +46,7 @@ internal class NativeTranscript : JPanel(null), Scrollable {
                     putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES,true); font=chatFont()
                     addHyperlinkListener { onLink(it) }
                 }
-                val card=RoundedPanel(if(user) Color(0x1B467E) else Color(0x232528)).apply { border=EmptyBorder(7,10,7,10); add(editor) }
+                val card=(if(user) RoundedPanel(Color(0x1B467E)) else transparentPanel()).apply { border=EmptyBorder(7,10,7,10); add(editor) }
                 val holder=transparentPanel(BorderLayout()).apply { border=EmptyBorder(4,if(user) 42 else 0,8,if(user) 0 else 18); add(if(isEmpty) editor else card) }
                 Bubble(holder,editor,user).also { add(holder) }
             }
@@ -60,7 +60,7 @@ internal class NativeTranscript : JPanel(null), Scrollable {
                     "empty" -> "<p style='color:#a8abb1'>${SafeMarkdown.escape(empty)}</p>"
                     else -> ChatPresentation.renderItem(item)
                 }
-                view.editor.text="<html><head><style>body{font-family:"+chatFont().family+";font-size:12px;line-height:1.45;font-weight:normal;color:#e7e8eb;margin:0}p{margin:0 0 3px 0}pre{font-size:12px;margin:0}table.code{border:1px solid #3b3e44}table.code td{padding:7px}a{color:#93bbf7}a.copy{text-decoration:none;color:#abb2be}</style></head><body>$body</body></html>"
+                view.editor.text="<html><head><style>body{line-height:1.45;font-weight:normal;color:#e7e8eb;margin:0}p{margin:0 0 3px 0}pre{margin:0}table.code{border:1px solid #3b3e44}table.code td{padding:7px}a{color:#93bbf7}a.copy{text-decoration:none;color:#abb2be}</style></head><body>$body</body></html>"
             }
         }
         revalidate(); repaint()

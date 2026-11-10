@@ -19,4 +19,18 @@ class NativeTranscriptTest {
             assertTrue(view.preferredSize.height>0)
         }
     }
+    @Test fun `ordinary message glyphs use the exact composer font size and weight`() {
+        SwingUtilities.invokeAndWait {
+            val transcript=NativeTranscript().apply { setSize(400,500) }
+            transcript.showItems("chat",buildJsonArray { add(buildJsonObject { put("id","1");put("type","agentMessage");put("text","Plain response") }) },"")
+            transcript.preferredSize; transcript.doLayout()
+            fun editors(c: java.awt.Component): List<javax.swing.JEditorPane> = (if(c is javax.swing.JEditorPane) listOf(c) else emptyList()) + (if(c is java.awt.Container) c.components.flatMap { editors(it) } else emptyList())
+            val editor=editors(transcript).single()
+            fun glyphs(v: javax.swing.text.View): List<javax.swing.text.GlyphView> = (if(v is javax.swing.text.GlyphView) listOf(v) else emptyList()) + (0 until v.viewCount).flatMap { glyphs(v.getView(it)) }
+            val fonts=glyphs(editor.ui.getRootView(editor)).map { it.font }
+            assertTrue(fonts.isNotEmpty())
+            for(font in fonts) { assertEquals(dev.agentgui.toolwindow.chatFont().family,font.family); assertEquals(dev.agentgui.toolwindow.chatFont().size,font.size); assertFalse(font.isBold) }
+        }
+    }
+
 }
