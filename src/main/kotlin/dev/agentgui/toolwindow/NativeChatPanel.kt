@@ -44,7 +44,6 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun customReply()=approvalId?.let { approvalDrafts.isEditing(activeId,it) }==true
     private val files=AttachmentRow()
     private val fileScroll=JBScrollPane(files).apply { border=EmptyBorder(0,0,0,0); isOpaque=false; viewport.isOpaque=false; hoverHorizontalScroll(); isVisible=false }
-    private val selections=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
     private val bottom=transparentPanel()
     private val connectedBottom=vertical()
     private val model=flatButton("Model ▾") { modelPopup() }
@@ -61,6 +60,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private var latestDraft=""
     private var draftThread=""
     private var draftText=""
+    private var submission:Triple<String,String,JsonArray>?=null
     private var rendered=""
     private var controlsSignature=""
     private var noticesSignature=""
@@ -68,8 +68,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private var approvalsSignature=""
     private var bottomMode=""
     private val animatedNotices=linkedSetOf<String>()
-    private var selectedSkill: String?=null
-    private var selectedPlugin: JsonObject?=null
+    private var draftMentions=JsonArray(emptyList())
+    private var latestMentions=JsonArray(emptyList())
+    private val approvalMentions=mutableMapOf<Pair<String,String>,List<InlineMention>>()
     private var popup: JBPopup?=null
     private var completionPopup: JBPopup?=null
     private val completionOpen get()=completionPopup?.isVisible==true
@@ -83,7 +84,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private var historyPrompts=emptyList<Pair<String,String>>()
     private var historyQuery: JTextField?=null
     private var historyList: JList<Prompt>?=null
-    private val drafts=Timer(250) { dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText)) }.apply { isRepeats=false }
+    private val drafts=Timer(250) { dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText),"mentions" to draftMentions) }.apply { isRepeats=false }
     private val autocomplete=Timer(180) { complete() }.apply { isRepeats=false }
     private val updates=Timer(80) { incoming?.let { incoming=null; applyState(it) } }.apply { isRepeats=false }
     private data class Prompt(val id: String,val text: String) { override fun toString()=text.replace('\n',' ').take(130) }
@@ -91,6 +92,13 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun vertical()=transparentPanel().apply { layout=BoxLayout(this,BoxLayout.Y_AXIS) }
     private val sink: (JsonObject)->Unit = { value -> ApplicationManager.getApplication().invokeLater {
         if(!disposed) when(value.string("type")) {
+            "submitted" -> {
+                val pending=submission
+                if(pending!=null && value.string("threadId")==activeId && value.string("requestId")==pending.first) {
+                    submission=null
+                    if(input.text==pending.second && mentionJson()==pending.third) { drafts.stop(); replaceInput(""); latestDraft=""; latestMentions=JsonArray(emptyList()); updateSend() }
+                }
+            }
             "state" -> { incoming=value; if(!updates.isRunning) updates.start() }
             "files" -> if(value.string("requestId")==pendingFileRequest && ChatPresentation.token(input.text,input.caretPosition)==completionToken) {
                 completionFiles=value["files"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }; showCompletions()
@@ -115,8 +123,8 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         input.lineWrap=true; input.wrapStyleWord=true; input.background=COMPOSER_BG; input.foreground=CHAT_FG; input.caretColor=CHAT_FG; input.border=EmptyBorder(0,0,0,0)
         input.toolTipText=null; input.accessibleContext.accessibleName="Message Codex"
         input.font=chatFont()
-        inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,input.getFontMetrics(input.font).height*5+4); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars(); retainScrollVisibility(false) }
-        val composeTop=vertical().apply { add(fileScroll); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
+        inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,input.getFontMetrics(input.font).height*7+4); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars(); retainScrollVisibility(false) }
+        val composeTop=vertical().apply { add(fileScroll); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
         composer.add(transparentPanel(BorderLayout(4,0)).apply {
             border=EmptyBorder(3,0,0,0)
             add(flatButton(icon=ChatIcon("clip",CHAT_FG,19),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(26,26); border=EmptyBorder(2,2,2,2) },BorderLayout.WEST)
@@ -132,7 +140,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         for(button in listOf(history,quota)) { button.font=context.font; button.foreground=CHAT_MUTED; button.iconTextGap=3; button.border=EmptyBorder(1,3,1,3); button.putClientProperty("compactFooter",true) }
         input.document.addDocumentListener(object: DocumentListener {
             override fun insertUpdate(e: DocumentEvent)=changed(); override fun removeUpdate(e: DocumentEvent)=changed(); override fun changedUpdate(e: DocumentEvent)=changed()
-            private fun changed() { if(!updating) { if(customReply()) { approvalDrafts.edit(activeId,approvalId!!,input.text) } else { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart() }; inputResize.restart(); updateSend() } }
+            private fun changed() { if(!updating) { if(customReply()) { approvalDrafts.edit(activeId,approvalId!!,input.text) } else { draftThread=activeId; draftText=input.text; draftMentions=mentionJson(); drafts.restart(); autocomplete.restart() }; inputResize.restart(); updateSend() } }
         })
         input.addCaretListener { if(!updating && !customReply()) autocomplete.restart() }
         input.addFocusListener(object: FocusAdapter() { override fun focusGained(e: FocusEvent?) { dispatch("refresh") } })
@@ -146,7 +154,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,InputEvent.SHIFT_DOWN_MASK),"insert-break")
         bind(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE,0),"dismiss") {
             hideCompletions()
-            if(customReply()) { val text=approvalDrafts.leave(activeId,approvalId!!); replaceInput(text.orEmpty()); updateSend(); approvalView?.focusCustom() }
+            if(customReply()) { val text=approvalDrafts.leave(activeId,approvalId!!); replaceInput(text.orEmpty(),approvalMentions[activeId to approvalId!!].orEmpty()); updateSend(); approvalView?.focusCustom() }
         }
         for((key,delta) in listOf(KeyEvent.VK_DOWN to 1,KeyEvent.VK_UP to -1)) {
             val stroke=KeyStroke.getKeyStroke(key,0); val previous=input.inputMap.get(stroke)
@@ -155,7 +163,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
                 else input.actionMap.get(previous)?.actionPerformed(ActionEvent(input,ActionEvent.ACTION_PERFORMED,""))
             }
         }
-        addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart(); renderSelections() } })
+        addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart() } })
         setupTransfers()
         transcript.onLink = { e -> if(e.eventType==javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) if(e.description?.startsWith("agent-copy:")==true) {
                 runCatching { val text=String(Base64.getUrlDecoder().decode(e.description.removePrefix("agent-copy:")),Charsets.UTF_8); Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text),null) }
@@ -167,7 +175,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun dispatch(type: String,vararg values: Pair<String,JsonElement>)=service.dispatch(obj { put("type",type); put("threadId",activeId); values.forEach { (key,value)->put(key,value) } })
     private fun chat()=state["sessions"]?.jsonArray?.map { it.jsonObject }?.firstOrNull { it.string("id")==activeId }
     private fun busy()=chat()?.string("state")?.let { it!="idle" } ?: false
-    private fun flushDraft() { if(drafts.isRunning) { drafts.stop(); dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText)) } }
+    private fun flushDraft() { if(drafts.isRunning) { drafts.stop(); dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText),"mentions" to draftMentions) } }
     private fun resizeComposer() {
         if(disposed || !::inputScroll.isInitialized) return
         val available=(input.width.takeIf { it>0 } ?: (width-52)).coerceAtLeast(100)
@@ -178,7 +186,16 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         send.working=busy() && !customReply()
         send.isEnabled=!decisionPending && state["connected"]?.jsonPrimitive?.booleanOrNull==true && (customReply() || busy() || approvalId==null && state["signedIn"]?.jsonPrimitive?.booleanOrNull==true && chat()!=null && (input.text.isNotBlank() || chat()?.get("files")?.jsonArray?.isNotEmpty()==true))
     }
-    private fun replaceInput(text: String) { val previous=updating; updating=true; input.text=text; updating=previous; inputResize.restart() }
+    private fun mentionJson()=JsonArray(input.mentions().map { mention -> obj {
+        put("kind",mention.kind); put("name",mention.name); put("path",mention.path?.let(::JsonPrimitive) ?: JsonNull); put("start",mention.start); put("end",mention.end)
+    } })
+    private fun readMentions(value: JsonElement?): List<InlineMention> = (value as? JsonArray).orEmpty().mapNotNull { item ->
+        val value=item as? JsonObject ?: return@mapNotNull null
+        val kind=value.string("kind") ?: return@mapNotNull null; val name=value.string("name") ?: return@mapNotNull null
+        val start=value["start"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null; val end=value["end"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+        InlineMention(kind,name,value.string("path"),start,end)
+    }
+    private fun replaceInput(text: String,mentions: List<InlineMention> = emptyList()) { val previous=updating; updating=true; input.restoreDraft(text,mentions); updating=previous; inputResize.restart() }
     private fun submitApproval() {
         val id=approvalId ?: return
         if(decisionPending) return
@@ -187,18 +204,20 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     }
     private fun submit() {
         if(!send.isEnabled || busy() || approvalId!=null) return
-        when(input.text.trim()) {
+        when(input.text.trim().takeIf { input.mentions().isEmpty() }) {
             "/model" -> { modelPopup(); return }; "/resume" -> { resumeHistory(); return }; "/settings" -> { settings(); return }
         }
         drafts.stop(); hideCompletions(); send.isEnabled=false
-        dispatch("send","text" to JsonPrimitive(input.text.trim()),"skill" to (selectedSkill?.let(::JsonPrimitive) ?: JsonNull),"plugin" to (selectedPlugin ?: JsonNull))
+        val id=java.util.UUID.randomUUID().toString(); val mentions=mentionJson()
+        submission=Triple(id,input.text,mentions)
+        dispatch("send","text" to JsonPrimitive(input.text),"mentions" to mentions,"requestId" to JsonPrimitive(id))
     }
     private fun applyState(value: JsonObject) {
         updating=true
         try {
             val old=activeId; state=value; activeId=value.string("activeId").orEmpty()
             val chat=chat(); val switched=old!=activeId
-            if(switched) { approvalId=null; approvalsSignature=""; popup?.cancel(); hideCompletions(); pendingPromptRequest=null; pendingReveal=null; selectedSkill=null; selectedPlugin=null; renderSelections() }
+            if(switched) { approvalId=null; approvalsSignature=""; popup?.cancel(); hideCompletions(); pendingPromptRequest=null; pendingReveal=null }
             val connected=value["connected"]?.jsonPrimitive?.booleanOrNull==true
             val signedIn=value["signedIn"]?.jsonPrimitive?.booleanOrNull==true
             val sessions=value["sessions"]?.jsonArray.orEmpty().map { it.jsonObject }
@@ -223,8 +242,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             input.isEnabled=connected && signedIn && chat!=null
             renderApprovals(chat)
             val draft=chat?.string("draft").orEmpty()
-            if(!customReply() && (switched || (draft!=latestDraft && (!input.hasFocus() || busy() && draft.isEmpty())))) { input.text=draft; if(draft.isEmpty()) { selectedSkill=null; selectedPlugin=null; renderSelections() } }
-            latestDraft=draft; inputResize.restart()
+            val mentions=(chat?.get("mentions") as? JsonArray) ?: JsonArray(emptyList())
+            if(!customReply() && (switched || ((draft!=latestDraft || mentions!=latestMentions) && (!input.hasFocus() || busy() && draft.isEmpty())))) replaceInput(draft,readMentions(mentions))
+            latestDraft=draft; latestMentions=mentions; inputResize.restart()
             val catalog=value["models"]?.jsonArray.orEmpty().map { it.jsonObject }
             val modelName=catalog.firstOrNull { it.string("model")==chat?.string("model") }?.string("displayName") ?: chat?.string("model") ?: "Model"
             model.text=modelName+" · "+(chat?.string("effort")?.replaceFirstChar { it.uppercase() } ?: "Reasoning")+" ▾"; model.isEnabled=!busy()
@@ -282,7 +302,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         val next=activeId+":"+requests.toString()
         if(next==approvalsSignature) { decisionPending=false; return }
         val previous=approvalId
-        if(previous!=null && previous!=id) approvalDrafts.resolve(activeId,previous)?.let { replaceInput(it) }
+        if(previous!=null && previous!=id) approvalDrafts.resolve(activeId,previous)?.let { replaceInput(it,approvalMentions.remove(activeId to previous).orEmpty()) }
         approvalsSignature=next; approvalId=id; decisionPending=false; approval.removeAll(); approvalView=null
         if(request!=null) {
             val itemId=request["params"]?.jsonObject?.string("itemId")
@@ -291,6 +311,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
                 if(!decisionPending && approvalId==id) {
                     if(decision=="cancel") {
                         flushDraft(); hideCompletions()
+                        if(!customReply()) approvalMentions[activeId to id!!]=input.mentions()
                         replaceInput(approvalDrafts.enter(activeId,id!!,input.text)); input.requestFocusInWindow(); updateSend()
                     } else {
                         decisionPending=true; updateSend()
@@ -301,7 +322,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             if(approvalDrafts.isEditing(activeId,id!!)) replaceInput(approvalDrafts.enter(activeId,id,chat?.string("draft").orEmpty()))
         }
         val live=state["sessions"]?.jsonArray.orEmpty().flatMap { session -> session.jsonObject["approvals"]?.jsonArray.orEmpty().map { session.jsonObject.string("id").orEmpty() to it.jsonObject["id"]!!.jsonPrimitive.content } }.toSet()
-        approvalDrafts.retain(live)
+        approvalDrafts.retain(live); approvalMentions.keys.retainAll(live)
         approval.isVisible=request!=null
     }
     private fun tabMenu(id: String,title: String)=JPopupMenu().apply {
@@ -309,7 +330,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         for((label,action) in listOf("Close tab" to "close","Archive chat" to "archive")) add(JMenuItem(label).apply { addActionListener { flushDraft(); dispatch(action,"threadId" to JsonPrimitive(id)) } })
         addSeparator(); add(JMenuItem("Settings").apply { addActionListener { settings() } })
     }
-    private fun showPopup(owner: JComponent,content: JComponent,width: Int=300) {
+    private fun showPopup(owner: JComponent,content: JComponent,width: Int=300,centered: Boolean=false) {
         popup?.cancel()
         applyChatFont(content)
         val container=RoundedPanel(COMPOSER_BG,Color(0x44464B)).apply {
@@ -322,13 +343,21 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             override fun onClosed(event: com.intellij.openapi.ui.popup.LightweightWindowEvent) { if(popup===window) popup=null }
         })
         popup=window
-        if(owner.isShowing) window.show(RelativePoint(owner,Point(0,-container.preferredSize.height-4)))
+        if(owner.isShowing) {
+            if(centered) {
+                val parentWindow=SwingUtilities.getWindowAncestor(owner)
+                val bounds=parentWindow?.bounds ?: owner.graphicsConfiguration.bounds
+                container.preferredSize=Dimension(minOf(container.preferredSize.width,(bounds.width-16).coerceAtLeast(1)),minOf(container.preferredSize.height,(bounds.height-16).coerceAtLeast(1)))
+                val anchor=Rectangle(owner.locationOnScreen,owner.size)
+                window.show(RelativePoint(centeredPopupLocation(anchor,container.preferredSize,bounds)))
+            } else window.show(RelativePoint(owner,Point(0,-container.preferredSize.height-4)))
+        }
     }
     private fun modelPopup() {
         val picker=ModelPickerPanel(state["models"]?.jsonArray.orEmpty().map { it.jsonObject },chat()?.string("model").orEmpty(),chat()?.string("effort").orEmpty(),
             { dispatch("model","model" to JsonPrimitive(it)) },
             { selected,effort -> dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(effort)) })
-        showPopup(model,picker,240); popup?.content?.putClientProperty("modelPicker",picker)
+        showPopup(model,picker,240,centered=true); popup?.content?.putClientProperty("modelPicker",picker)
     }
     private fun quotaWindows()=state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
     private fun quotaPopup() {
@@ -367,7 +396,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun complete() {
         if(disposed || customReply() || !input.hasFocus() || input.getClientProperty("composing")==true) return
         val token=ChatPresentation.token(input.text,input.caretPosition)
-        if(token==null) { hideCompletions(); return }
+        if(token==null || input.isMentionAt(input.caretPosition)) { hideCompletions(); return }
         if(token!=completionToken) { completionFiles=emptyList(); pendingFileRequest=null }
         completionToken=token; showCompletions()
         if(token.marker=='@') { pendingFileRequest=java.util.UUID.randomUUID().toString(); dispatch("searchFiles","query" to JsonPrimitive(token.query),"requestId" to JsonPrimitive(pendingFileRequest)) }
@@ -377,10 +406,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         val options=mutableListOf<Suggestion>()
         if(token.marker=='/') {
             for((command,detail) in listOf("new" to "Start a new chat","compact" to "Compact current context","model" to "Choose model","resume" to "Resume a conversation","status" to "Show status","settings" to "Plugin settings")) if(command.contains(token.query,true)) options.add(Suggestion("/$command",detail) { replaceToken("/$command ") })
-            state["skills"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { skill -> options.add(Suggestion(skill.string("name").orEmpty(),skill.string("description") ?: "Skill") { selectedSkill=skill.string("name"); replaceToken(""); renderSelections() }) }
+            state["skills"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { skill -> options.add(Suggestion(skill.string("name").orEmpty(),skill.string("description") ?: "Skill") { replaceMention("skill",skill.string("name").orEmpty(),skill.string("path")) }) }
         } else {
-            state["plugins"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { plugin -> options.add(Suggestion(plugin.string("name").orEmpty(),plugin.string("description") ?: "Plugin") { selectedPlugin=plugin; replaceToken(""); renderSelections() }) }
-            completionFiles.forEach { path -> options.add(Suggestion(path,"Project file") { dispatch("attachProjectFile","path" to JsonPrimitive(path)); replaceToken("") }) }
+            state["plugins"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { plugin -> options.add(Suggestion(plugin.string("name").orEmpty(),plugin.string("description") ?: "Plugin") { replaceMention("plugin",plugin.string("name").orEmpty(),plugin.string("path") ?: plugin.string("id")) }) }
+            completionFiles.forEach { path -> options.add(Suggestion(path,"Project file") { dispatch("attachProjectFile","path" to JsonPrimitive(path)); replaceMention("file",path,path) }) }
         }
         completionPopup?.cancel()
         val list=JList(options.toTypedArray()).apply {
@@ -412,14 +441,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         hideCompletions(); input.replaceRange(replacement,token.start,token.end); input.caretPosition=token.start+replacement.length; input.requestFocusInWindow()
     }
     private fun hideCompletions() { autocomplete.stop(); completionPopup?.cancel(); completionPopup=null; completionList=null; completionToken=null; pendingFileRequest=null }
-    private fun renderSelections() {
-        selections.removeAll()
-        val labels=listOfNotNull(selectedSkill?.let { "/"+it.removePrefix("/") },selectedPlugin?.string("name")?.let { "@"+it.removePrefix("@") })
-        val cap=(((width-52).coerceAtLeast(140)-(labels.size-1).coerceAtLeast(0)*4)/labels.size.coerceAtLeast(1)).coerceIn(64,160)
-        val chipWidth=labels.maxOfOrNull { getFontMetrics(chatFont(12f)).stringWidth(it)+32 }?.coerceIn(64,cap) ?: 64
-        selectedSkill?.let { selections.add(SelectionChip("/"+it.removePrefix("/"),chipWidth) { selectedSkill=null; renderSelections() }) }
-        selectedPlugin?.let { selections.add(SelectionChip("@"+it.string("name").orEmpty().removePrefix("@"),chipWidth) { selectedPlugin=null; renderSelections() }) }
-        selections.isVisible=selections.componentCount>0; selections.revalidate(); selections.repaint()
+    private fun replaceMention(kind: String,name: String,path: String?) {
+        val token=completionToken ?: return
+        if(ChatPresentation.token(input.text,input.caretPosition)!=token) { hideCompletions(); return }
+        hideCompletions(); input.insertMention(kind,name,path,token.start,token.end); input.requestFocusInWindow()
     }
     private fun resumeHistory() { dispatch("history","query" to JsonPrimitive(JOptionPane.showInputDialog(this,"Search conversations","") ?: return)) }
     private fun resumeResults(event: JsonObject) {
@@ -437,6 +462,8 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun setupTransfers() {
         val original=input.transferHandler
         input.transferHandler=object: TransferHandler() {
+            override fun getSourceActions(component: JComponent)=original.getSourceActions(component)
+            override fun exportToClipboard(component: JComponent,clipboard: java.awt.datatransfer.Clipboard,action: Int)=original.exportToClipboard(component,clipboard,action)
             override fun canImport(support: TransferSupport)=support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)||support.isDataFlavorSupported(DataFlavor.imageFlavor)||original.canImport(support)
             override fun importData(support: TransferSupport): Boolean=try {
                 when {
@@ -447,6 +474,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
                         val buffered=BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB); val graphics=buffered.createGraphics(); try { graphics.drawImage(image,0,0,null) } finally { graphics.dispose() }
                         val bytes=ByteArrayOutputStream(); ImageIO.write(buffered,"png",bytes); dispatch("pasteImage","name" to JsonPrimitive("Image.png"),"mime" to JsonPrimitive("image/png"),"data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes.toByteArray()))); true
                     }
+                    support.isDataFlavorSupported(DataFlavor.stringFlavor) -> { input.replaceSelection(support.transferable.getTransferData(DataFlavor.stringFlavor) as String); true }
                     else -> original.importData(support)
                 }
             } catch(e: Exception) { JOptionPane.showMessageDialog(this@NativeChatPanel,e.message ?: "Could not attach file","Attachment",JOptionPane.ERROR_MESSAGE); false }

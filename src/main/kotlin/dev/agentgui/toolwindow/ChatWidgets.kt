@@ -134,9 +134,6 @@ internal class SendButton(action: () -> Unit) : JButton() {
     override fun addNotify() { super.addNotify(); if(working) activity.start() }
     override fun removeNotify() { activity.stop(); super.removeNotify() }
 }
-internal class ComposerTextArea : JBTextArea(1,25) {
-    init { getEmptyText().setText("/ commands and skills · @ files and plugins"); com.intellij.ui.components.TextComponentEmptyText.setupPlaceholderVisibility(this) }
-}
 /** Short fill animation only while this visible popover exists. */
 internal class UsageMeter(private val remaining: Double) : JComponent() {
     private var fill=0f
@@ -239,9 +236,9 @@ internal class QuietSearchField : JTextField() {
     }
 }
 
-internal fun composerHeight(input: JTextArea, width: Int): Int {
+internal fun composerHeight(input: javax.swing.text.JTextComponent, width: Int): Int {
     val view=input.ui.getRootView(input)
     view.setSize(width.toFloat(),Float.MAX_VALUE)
     val line=input.getFontMetrics(input.font).height
-    return (kotlin.math.ceil(view.getPreferredSpan(javax.swing.text.View.Y_AXIS).toDouble()).toInt()+4).coerceIn(line+4,line*5+4)
+    return (kotlin.math.ceil(view.getPreferredSpan(javax.swing.text.View.Y_AXIS).toDouble()).toInt()+4).coerceIn(line+4,line*7+4)
 }
