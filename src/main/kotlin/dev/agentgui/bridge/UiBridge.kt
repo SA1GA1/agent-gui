@@ -12,9 +12,13 @@ import kotlinx.serialization.json.*
 
 /** Only local compiled UI receives this capability. Agent Markdown never runs HTML. */
 class UiBridge(private val project: Project, private val browser: JBCefBrowser) : Disposable {
+    companion object {
+        // A 10 MB binary file expands to about 14 MB in base64, plus JSON metadata.
+        const val MAX_REQUEST_CHARS = 15 * 1024 * 1024
+    }
     private val service = project.service<SessionService>()
     private val query = JBCefJSQuery.create(browser as JBCefBrowserBase)
-    private val allowed = setOf("promptHistory", "revealPrompt", "ready", "dismissNotice", "toggleWarmup", "connect", "login", "new", "select", "close", "rename", "history", "resume", "archive", "draft", "model", "send", "stop", "compact", "approve", "attach", "uploadText", "pasteImage", "removeAttachment", "searchFiles", "attachProjectFile", "refresh", "openUrl")
+    private val allowed = setOf("promptHistory", "revealPrompt", "ready", "dismissNotice", "toggleWarmup", "connect", "login", "new", "select", "close", "rename", "history", "resume", "archive", "draft", "model", "send", "stop", "compact", "approve", "attach", "uploadText", "uploadBinary", "pasteImage", "removeAttachment", "searchFiles", "attachProjectFile", "refresh", "openUrl")
     private val sink: (JsonObject) -> Unit = { event ->
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed && !browser.isDisposed) {
@@ -26,7 +30,7 @@ class UiBridge(private val project: Project, private val browser: JBCefBrowser) 
     init {
         query.addHandler { request ->
             try {
-                require(request.length <= 15 * 1024 * 1024) { "Message is too large" }
+                require(request.length <= MAX_REQUEST_CHARS) { "Message is too large" }
                 val message = Json.parseToJsonElement(request).jsonObject
                 require(message["type"]?.jsonPrimitive?.content in allowed) { "Unknown command" }
                 service.dispatch(message)

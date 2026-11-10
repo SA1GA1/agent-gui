@@ -19,13 +19,13 @@ internal class AttachmentRow : JPanel(FlowLayout(FlowLayout.LEFT,6,3)), Scrollab
 
 internal class AttachmentCard(name:String, private val preview:BufferedImage?, remove:()->Unit) : JPanel(BorderLayout(6,0)) {
     init {
-        isOpaque=false; preferredSize=Dimension(if(preview==null) 156 else 72,72)
+        isOpaque=false; preferredSize=Dimension(if(preview==null) 132 else 72,72)
         border=EmptyBorder(5,8,5,4); toolTipText=name
         val close=RoundCloseButton("Remove $name",remove)
         if(preview==null) {
             add(JLabel(com.intellij.icons.AllIcons.FileTypes.Text).apply { border=EmptyBorder(0,0,0,1) },BorderLayout.WEST)
-            val title=JLabel(name).apply { font=chatFont(12f); foreground=CHAT_FG }
-            val format=JLabel(name.substringAfterLast('.',"FILE").uppercase()).apply { font=chatFont(11f); foreground=CHAT_MUTED }
+            val title=JLabel(if(name.lastIndexOf('.')>0) name.substringBeforeLast('.') else name).apply { font=chatFont(12f); foreground=CHAT_FG }
+            val format=JLabel((if(name.lastIndexOf('.')>0) name.substringAfterLast('.').ifEmpty { "FILE" } else "FILE").uppercase()).apply { font=chatFont(11f); foreground=CHAT_MUTED }
             add(transparentPanel(GridLayout(2,1,0,1)).apply { border=EmptyBorder(15,0,15,0); add(title);add(format) })
         }
         add(transparentPanel(BorderLayout()).apply { add(close,BorderLayout.NORTH) },BorderLayout.EAST)
@@ -35,7 +35,7 @@ internal class AttachmentCard(name:String, private val preview:BufferedImage?, r
         val c=g.create() as Graphics2D
         try {
             c.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
-            c.clip=RoundRectangle2D.Float(0f,0f,width.toFloat(),height.toFloat(),14f,14f)
+            c.clip(RoundRectangle2D.Float(0f,0f,width.toFloat(),height.toFloat(),14f,14f))
             c.color=Color(0x35373B);c.fillRect(0,0,width,height)
             preview?.let {
                 val scale=maxOf(width.toDouble()/it.width,height.toDouble()/it.height)

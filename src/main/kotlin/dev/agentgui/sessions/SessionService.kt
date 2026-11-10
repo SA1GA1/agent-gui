@@ -65,6 +65,7 @@ class SessionService(private val project: Project) : Disposable {
 
     private class Chat(val id: String, var title: String = "New chat") {
         var draft = ""
+        var mentions = JsonArray(emptyList())
         var model = ""
         var effort = ""
         var turnId: String? = null
@@ -85,7 +86,7 @@ class SessionService(private val project: Project) : Disposable {
                 val s = value.jsonObject
                 val id = s.string("id") ?: return@forEach
                 sessions[id] = Chat(id, s.string("title") ?: "Chat").apply {
-                    draft = s.string("draft") ?: ""; model = s.string("model") ?: ""; effort = s.string("effort") ?: ""
+                    draft = s.string("draft") ?: ""; mentions=PromptMentions.valid(draft,s["mentions"]); model = s.string("model") ?: ""; effort = s.string("effort") ?: ""
                     open = s["open"]?.jsonPrimitive?.booleanOrNull ?: true
                     files.addAll((s["files"] as? JsonArray).orEmpty().map { it.jsonObject })
                 }
@@ -121,7 +122,7 @@ class SessionService(private val project: Project) : Disposable {
             "revealPrompt" -> revealPrompt(id, m.string("itemId").orEmpty())
             "resume" -> { val chat = sessions.getOrPut(id) { Chat(id) }; chat.open = true; store.activeId = id; ensureResumed(chat); persist(); publish() }
             "archive" -> { require(sessions[id]?.state.let { it == null || it == "idle" }); rpc("thread/archive", obj { put("threadId", id) }); sessions.remove(id); if (store.activeId == id) store.activeId = sessions.keys.lastOrNull() ?: ""; persist(); publish() }
-            "draft" -> { sessions[id]?.draft = m.string("text")?.take(200000).orEmpty(); persist() }
+            "draft" -> { sessions[id]?.let { chat -> chat.draft = m.string("text")?.take(200000).orEmpty(); chat.mentions=PromptMentions.valid(chat.draft,m["mentions"]) }; persist() }
             "model" -> {
                 val chat = sessions[id] ?: return
                 val model = models.firstOrNull { it.jsonObject.string("model") == m.string("model") }?.jsonObject ?: error("Model unavailable")
@@ -147,11 +148,15 @@ class SessionService(private val project: Project) : Disposable {
             }
             "attach" -> chooseFiles(id)
             "uploadText" -> {
-                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Up to 8 attachments are supported" }
+                val chat = sessions[id] ?: return; require(chat.files.size < AttachmentService.MAX_ATTACHMENTS) { "Up to ${AttachmentService.MAX_ATTACHMENTS} attachments are supported" }
                 chat.files.add(attachments.text(m.string("name") ?: "File", m.string("text").orEmpty())); persist(); publish()
             }
+            "uploadBinary" -> {
+                val chat = sessions[id] ?: return; require(chat.files.size < AttachmentService.MAX_ATTACHMENTS) { "Up to ${AttachmentService.MAX_ATTACHMENTS} attachments are supported" }
+                chat.files.add(attachments.binary(m.string("name") ?: "File", m.string("mime").orEmpty(), m.string("data").orEmpty())); persist(); publish()
+            }
             "pasteImage" -> {
-                val chat = sessions[id] ?: return; require(chat.files.size < 8) { "Up to 8 attachments are supported" }
+                val chat = sessions[id] ?: return; require(chat.files.size < AttachmentService.MAX_ATTACHMENTS) { "Up to ${AttachmentService.MAX_ATTACHMENTS} attachments are supported" }
                 chat.files.add(attachments.paste(m.string("name") ?: "Image", m.string("mime").orEmpty(), m.string("data").orEmpty())); persist(); publish()
             }
             "removeAttachment" -> { val chat = sessions[id] ?: return; val file = chat.files.firstOrNull { it.string("id") == m.string("id") } ?: return; attachments.remove(file.string("id")!!); chat.files.remove(file); persist(); publish() }
@@ -223,25 +228,29 @@ class SessionService(private val project: Project) : Disposable {
     private fun send(id: String, message: JsonObject) {
         val chat = sessions[id] ?: error("Create a chat")
         require(chat.state == "idle") { "A task is already running" }; require(signedIn) { "Sign in to Codex" }
-        val text = message.string("text")?.trim().orEmpty(); require(text.length <= 200000)
-        if (text.startsWith('/')) { command(chat, text); return }
-        require(text.isNotEmpty() || chat.files.isNotEmpty()) { "Enter a message or add an attachment" }
+        val text = message.string("text").orEmpty(); require(text.length <= 200000)
+        val mentions=PromptMentions.valid(text,message["mentions"])
+        if (text.trimStart().startsWith('/') && mentions.none { it.jsonObject["start"]?.jsonPrimitive?.intOrNull==text.length-text.trimStart().length }) { command(chat, text.trim()); return }
+        require(text.isNotBlank() || chat.files.isNotEmpty()) { "Enter a message or add an attachment" }
         ensureResumed(chat)
         chat.revealedItems = null
         val input = buildJsonArray {
-            if (text.isNotEmpty()) add(obj { put("type", "text"); put("text", text) })
+            if (text.isNotBlank()) add(obj { put("type", "text"); put("text", text) })
+            PromptMentions.inputs(text,mentions,extensions,plugins).forEach { add(it) }
             chat.files.forEach { add(attachments.input(it)) }
-            message.string("skill")?.let { name ->
+            message.string("skill")?.takeIf { mentions.none { it.jsonObject.string("kind")=="skill" } }?.let { name ->
                 val skill = extensions.firstOrNull { it.jsonObject.string("name") == name && it.jsonObject["enabled"]?.jsonPrimitive?.booleanOrNull != false }?.jsonObject ?: error("Skill unavailable")
                 add(obj { put("type", "skill"); put("name", name); put("path", skill.string("path")) })
             }
-            (message["plugin"] as? JsonObject)?.let { selected ->
+            (message["plugin"] as? JsonObject)?.takeIf { mentions.none { it.jsonObject.string("kind")=="plugin" } }?.let { selected ->
                 val plugin = plugins.firstOrNull { it.jsonObject.string("name") == selected.string("name") && it.jsonObject.string("path") == selected.string("path") }?.jsonObject ?: error("Plugin unavailable")
                 add(obj { put("type", "mention"); put("name", plugin.string("name")); put("path", plugin.string("path")) })
             }
         }
         val params = obj { put("threadId", id); put("input", input); if (chat.model.isNotEmpty()) put("model", chat.model); if (chat.effort.isNotEmpty()) put("effort", chat.effort) }
-        chat.state = "queued"; chat.draft = ""; chat.files.clear(); queue.add(id to params); persist(); pump(); publish()
+        chat.state = "queued"; chat.draft = ""; chat.mentions=JsonArray(emptyList()); chat.files.clear(); queue.add(id to params); persist()
+        listener?.invoke(obj { put("type","submitted");put("threadId",id);put("requestId",message["requestId"] ?: JsonNull) })
+        pump(); publish()
     }
     private fun command(chat: Chat, text: String) {
         when (text.substringBefore(' ')) {
@@ -383,7 +392,7 @@ class SessionService(private val project: Project) : Disposable {
 
     private fun addFiles(id: String, paths: List<Path>) {
         val chat = sessions[id] ?: return
-        require(chat.files.size + paths.size <= 8) { "Up to 8 attachments are supported" }
+        require(chat.files.size + paths.size <= AttachmentService.MAX_ATTACHMENTS) { "Up to ${AttachmentService.MAX_ATTACHMENTS} attachments are supported" }
         paths.forEach { chat.files.add(attachments.snapshot(it)) }; persist(); publish()
     }
     private fun searchFiles(query: String, requestId: String) {
@@ -461,7 +470,7 @@ class SessionService(private val project: Project) : Disposable {
         } }
     }
     private fun refreshBranch() { branch = BranchService.current(cwd) }
-    private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)) } }).toString() }
+    private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)) } }).toString() }
     private fun disconnected(reason: String) {
         addError(reason); connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear(); approvalFlow.clear()
         sessions.values.forEach { it.state = "idle"; it.turnId = null; it.resumed = false; it.stale = true }; publish()
@@ -486,7 +495,7 @@ class SessionService(private val project: Project) : Disposable {
             put("type", "state"); put("connected", connected); put("signedIn", signedIn); put("status", status); put("version", version); put("binary", store.binary)
             put("cwd", cwd); put("branch", branch); put("activeId", store.activeId); put("models", models); put("history", history); put("historyCursor", historyCursor); put("skills", extensions); put("plugins", plugins)
             put("sessions", buildJsonArray { sessions.values.forEach { chat -> add(obj {
-                put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("state", chat.state)
+                put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("state", chat.state)
                 put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
                 put("files", buildJsonArray { chat.files.forEach { f -> add(JsonObject(f + ("preview" to (runCatching { if (chat.id == store.activeId) attachments.preview(f) else null }.getOrNull()?.let(::JsonPrimitive) ?: JsonNull)))) } })
                 put("approvals", JsonArray(approvals.values.filter { it["params"]?.jsonObject?.string("threadId") == chat.id }))
