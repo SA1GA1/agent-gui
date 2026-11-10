@@ -17,4 +17,17 @@ class MarkdownTest {
         assertTrue(html.contains("<h1>Hello</h1>")); assertTrue(html.contains("<pre><code"))
         assertFalse(html.contains("<script>"));assertFalse(html.contains("<img"));assertFalse(html.contains("src="))
     }
+
+    @Test fun `renders latex locally while retaining exact formula in accessible fallback`() {
+        val formula="W(p)=\\frac{Y(p)}{X(p)}=\\frac{1{,}53p^2+16{,}73p+7{,}93}{0{,}43p^4+p^3+1{,}93p^2}"
+        val html=SafeMarkdown.render("\\[$formula\\] and \\(x^2\\) and ${'$'}y${'$'}")
+        assertEquals(3,Regex("src='agent-math:").findAll(html).count())
+        assertTrue(html.contains(SafeMarkdown.escape(formula)))
+    }
+    @Test fun `math leaves code currency and unsafe formulas as readable text`() {
+        val html=SafeMarkdown.render("Cost ${'$'}20 and ${'$'}30. `\\(x\\)`\n\n```tex\n\\[y\\]\n```\n\n\\[\\includegraphics{https://bad.invalid/a}\\]")
+        assertFalse(html.contains("src='agent-math:"))
+        assertTrue(html.contains("includegraphics"))
+        assertTrue(html.contains("Cost ${'$'}20 and ${'$'}30"))
+    }
 }

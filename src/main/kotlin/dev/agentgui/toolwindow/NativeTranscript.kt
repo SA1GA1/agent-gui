@@ -41,7 +41,8 @@ internal class NativeTranscript : JPanel(null), Scrollable {
         content.forEachIndexed { index,item ->
             val id=item.string("id").orEmpty(); val user=item.string("type")=="userMessage"; val isEmpty=item.string("type")=="empty"
             val view=views.getOrPut(id) {
-                val editor=JEditorPane("text/html","").apply {
+                val editor=JEditorPane().apply {
+                    editorKit=MathEditorKit()
                     isEditable=false; isOpaque=false; border=EmptyBorder(0,0,0,0); foreground=CHAT_FG
                     putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES,true); font=chatFont()
                     addHyperlinkListener { onLink(it) }

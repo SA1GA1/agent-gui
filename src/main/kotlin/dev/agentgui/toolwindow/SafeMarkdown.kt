@@ -23,6 +23,17 @@ object SafeMarkdown {
                 context.writer.raw("<table class='code' width='100%' cellspacing='0' cellpadding='8' bgcolor='#222427'><tr><td><font color='#b2b7c0'>$language</font></td><td align='right'><a class='copy' href='agent-copy:$copy'>Copy ▢</a></td></tr><tr><td colspan='2'><pre><code>$highlighted</code></pre></td></tr></table>")
             }
         } }.build()
-    fun render(text: String): String = renderer.render(parser.parse(text))
+    fun render(text: String): String {
+        val replacements=linkedMapOf<String,String>()
+        val prefix="AgentMath"+java.util.UUID.randomUUID().toString().replace("-", "")
+        val normalized=MathMarkup.replace(text) { source,display ->
+            val token=prefix+replacements.size+"End"
+            replacements[token]=MathRendering.html(source,display) ?: escape(source)
+            token
+        }
+        var html=renderer.render(parser.parse(normalized))
+        replacements.forEach { (token,value) -> html=html.replace(token,value) }
+        return html
+    }
     fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'","&#39;")
 }
