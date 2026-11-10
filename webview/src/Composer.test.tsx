@@ -36,7 +36,7 @@ describe('Composer',()=>{
     render(<Composer chat={{...chat,files:[{id:'f',name:'notes.txt',image:false}]}} state={{...state,plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true}]}} onHistory={()=>{}}/>);
     const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'@Git{Enter}Look at this{Enter}');
     expect(calls.find(c=>c.type==='send')?.plugin).toEqual({name:'GitHub',path:'/github'});
-    expect(screen.getByText('notes.txt')).toBeTruthy();
+    expect(screen.getByText('notes')).toBeTruthy();
     await user.click(screen.getByRole('button',{name:'Remove notes.txt'}));expect(calls.at(-1)).toEqual({type:'removeAttachment',threadId:'a',id:'f'});
   });
   it('shows document formats and image thumbnails with independent removal',async()=>{
@@ -45,7 +45,7 @@ describe('Composer',()=>{
     expect(screen.getByText('MD')).toBeTruthy();expect(screen.getByRole('img',{name:'photo.png'})).toBeTruthy();
     await userEvent.setup().click(screen.getByRole('button',{name:'Remove photo.png'}));
     expect(calls.at(-1)).toEqual({type:'removeAttachment',threadId:'a',id:'photo'});
-    expect(screen.getByText('long-notes.md')).toBeTruthy();
+    expect(screen.getByText('long-notes')).toBeTruthy();
   });
   it('ignores stale file results and dismisses autocomplete with Escape',async()=>{
     const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
@@ -85,15 +85,15 @@ it('keeps options visible in the shared composer and restores ordinary draft aft
  const pending:Chat={...chat,state:'running',draft:'Keep this ordinary draft',approvals:[{id:42,method:'item/commandExecution/requestApproval',params:{threadId:'a',command:'./gradlew test'}}]};
  const {rerender}=render(<Composer chat={pending} state={state} onHistory={()=>{}}/>);
  const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));
- const input=screen.getByRole('textbox');expect((input as HTMLTextAreaElement).value).toBe('');
+ const input=screen.getByRole('textbox');expect(screen.getByRole('textbox').textContent).toBe('');
  await user.type(input,'Review only');
  expect(screen.getByRole('button',{name:/1\. Allow once/})).toBeTruthy();
  expect(calls.filter(c=>c.type==='draft')).toHaveLength(0);
- await user.keyboard('{Escape}');expect((input as HTMLTextAreaElement).value).toBe('Keep this ordinary draft');
- await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));expect((input as HTMLTextAreaElement).value).toBe('Review only');
+ await user.keyboard('{Escape}');expect(screen.getByRole('textbox').textContent).toBe('Keep this ordinary draft');
+ await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));expect(screen.getByRole('textbox').textContent).toBe('Review only');
  await user.click(screen.getByRole('button',{name:'Send'}));expect(calls.at(-1)).toEqual({type:'approve',threadId:'a',requestId:'42',decision:'cancel',text:'Review only'});
  rerender(<Composer chat={{...pending,approvals:[],state:'running'}} state={state} onHistory={()=>{}}/>);
- expect((input as HTMLTextAreaElement).value).toBe('Keep this ordinary draft');
+ expect(screen.getByRole('textbox').textContent).toBe('Keep this ordinary draft');
 });
 
 it('moves approval selection with arrows without consenting until Enter',async()=>{
@@ -111,13 +111,13 @@ it('restores the custom reply rather than the ordinary draft when returning to a
  const b:Chat={...chat,id:'b',draft:'ordinary B'};
  const {rerender}=render(<Composer chat={a} state={state} onHistory={()=>{}}/>);
  const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/3\. Decline or write a reply/}));await user.type(screen.getByRole('textbox'),'custom A');
- rerender(<Composer chat={b} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('ordinary B');
- rerender(<Composer chat={a} state={state} onHistory={()=>{}}/>);expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('custom A');
+ rerender(<Composer chat={b} state={state} onHistory={()=>{}}/>);expect(screen.getByRole('textbox').textContent).toBe('ordinary B');
+ rerender(<Composer chat={a} state={state} onHistory={()=>{}}/>);expect(screen.getByRole('textbox').textContent).toBe('custom A');
 });
 
 it('keeps model picker inside the composer toolbar and uses a slash placeholder',()=>{
  window.agentHost=()=>{};render(<Composer chat={chat} state={state} onHistory={()=>{}}/>);
- const field=screen.getByRole('textbox');expect(field.getAttribute('placeholder')).toMatch(/^\//);expect(field.getAttribute('title')).toBeNull();
+ const field=screen.getByRole('textbox');expect(field.getAttribute('data-placeholder')).toMatch(/^\//);expect(field.getAttribute('title')).toBeNull();
  expect(screen.getByRole('button',{name:'Model'}).closest('.composer-toolbar')).not.toBeNull();
 });
 
@@ -137,10 +137,29 @@ it('keeps the model picker open when choosing a model',async()=>{
  expect(screen.getByRole('dialog',{name:'Models'})).toBeTruthy();expect(calls.at(-1)).toEqual({type:'model',threadId:'a',model:'other'});
 });
 
-it('shows compact prefixed skill and plugin chips with independent close actions',async()=>{
- window.agentHost=()=>{};
+it('keeps selected mentions inline and removes a whole plugin with one Backspace',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
  render(<Composer chat={chat} state={{...state,skills:[{name:'review',description:'Review',path:'/review',enabled:true}],plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true}]}} onHistory={()=>{}}/>);
- const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'/rev{Enter}@Git{Enter}');
- expect(screen.getByText('/review').closest('.context-chip')).not.toBeNull();expect(screen.getByText('@GitHub').closest('.context-chip')).not.toBeNull();
- await user.click(screen.getByRole('button',{name:'Remove skill'}));expect(screen.queryByText('/review')).toBeNull();expect(screen.getByText('@GitHub')).toBeTruthy();
+ const user=userEvent.setup();const input=screen.getByRole('textbox');await user.type(input,'/rev{Enter}@Git{Enter}');
+ expect(screen.getByText('/review').closest('.inline-mention')).not.toBeNull();expect(screen.getByText('@GitHub').closest('.inline-mention')).not.toBeNull();
+ await user.keyboard('{Backspace}');expect(screen.queryByText('@GitHub')).toBeNull();expect(screen.getByText('/review')).toBeTruthy();
+ await user.type(input,'Check this{Enter}');const sent=calls.find(c=>c.type==='send');expect(sent?.mentions).toEqual([{kind:'skill',name:'review',path:'/review',start:0,end:7}]);
+ expect(sent?.text).toBe('/review Check this');
+});
+
+it('does not restore another chat draft through undo',async()=>{
+ window.agentHost=()=>{};
+ const {rerender}=render(<Composer chat={{...chat,draft:'Private draft'}} state={state} onHistory={()=>{}}/>);
+ const user=userEvent.setup();await user.type(screen.getByRole('textbox'),' edit');
+ rerender(<Composer chat={{...chat,id:'b',draft:'Other chat'}} state={state} onHistory={()=>{}}/>);
+ await user.click(screen.getByRole('textbox'));await user.keyboard('{Meta>}z{/Meta}');
+ expect(screen.getByRole('textbox').textContent).toBe('Other chat');
+});
+
+it('clears the submitted draft on acknowledgement even when busy state was too brief to render',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ render(<Composer chat={chat} state={state} onHistory={()=>{}}/>);
+ const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'Fast request{Enter}');const sent=calls.find(c=>c.type==='send');
+ act(()=>window.dispatchEvent(new CustomEvent('agent-state',{detail:{type:'submitted',threadId:'a',requestId:sent?.requestId}})));
+ expect(screen.getByRole('textbox').textContent).toBe('');
 });
