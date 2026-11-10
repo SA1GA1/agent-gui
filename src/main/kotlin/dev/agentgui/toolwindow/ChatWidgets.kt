@@ -91,6 +91,10 @@ internal class HoverButton(text: String, icon: Icon?) : JButton(text,icon) {
             override fun mouseExited(e: MouseEvent) { target=0f; transition.start() }
         })
     }
+    override fun getPreferredSize(): Dimension {
+        if(getClientProperty("compactFooter")==true) return Dimension(getFontMetrics(font).stringWidth(text)+(icon?.iconWidth ?: 0)+iconTextGap+6,20)
+        return super.getPreferredSize()
+    }
     override fun paintComponent(g: Graphics) {
         if(outlined) { val copy=g.create() as Graphics2D
             try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
@@ -176,37 +180,68 @@ internal fun browserChatTab(title: String,selected: Boolean,onSelect: ()->Unit,o
             val copy=g.create() as Graphics2D
             try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
                 if(selected) { copy.color=Color(0x303236); copy.fillRoundRect(0,0,width-1,height-1,12,12) }
-                else { copy.color=Color(0x3B3E44); copy.drawLine(width-1,8,width-1,height-8) }
+
             } finally { copy.dispose() }; super.paintComponent(g)
         }
     }
     panel.preferredSize=Dimension(144,30)
     panel.add(flatButton(title,tooltip=title,action=onSelect).apply { horizontalAlignment=SwingConstants.LEFT; foreground=if(selected) CHAT_FG else CHAT_MUTED; border=EmptyBorder(4,9,4,3); font=chatFont(12f) },BorderLayout.CENTER)
-    if(selected) panel.add(object: JButton() {
-        init { preferredSize=Dimension(22,22); isOpaque=false; isContentAreaFilled=false; isBorderPainted=false; isFocusPainted=false; border=EmptyBorder(0,0,0,0); getAccessibleContext().accessibleName="Close chat"; toolTipText="Close chat"; addActionListener { onClose() } }
-        override fun paintComponent(g: Graphics) { val p=g.create() as Graphics2D
-            try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); if(model.isRollover || hasFocus()) { p.color=Color(0x4A4D53); p.fillOval((width-18)/2,(height-18)/2,18,18) }; ChatIcon("close",CHAT_MUTED,12).paintIcon(this,p,(width-12)/2,(height-12)/2) } finally { p.dispose() }
-        }
-    }.apply { isRolloverEnabled=true },BorderLayout.EAST)
+    if(selected) panel.add(RoundCloseButton("Close chat",onClose),BorderLayout.EAST)
     return panel
 }
 internal fun JSlider.roundedReasoningTrack() {
-    isOpaque=false; paintTicks=false; border=EmptyBorder(0,0,0,0); preferredSize=Dimension(270,34)
+    isOpaque=false; paintTicks=false; border=EmptyBorder(0,0,0,0); preferredSize=Dimension(210,30)
     setUI(object: javax.swing.plaf.basic.BasicSliderUI(this) {
         override fun getThumbSize()=Dimension(18,18)
+        override fun calculateTrackRect() { super.calculateTrackRect(); trackRect.x+=8; trackRect.width=(trackRect.width-16).coerceAtLeast(1) }
+        override fun setThumbLocation(x: Int,y: Int) { super.setThumbLocation(x,y); slider.repaint() }
         override fun paintTrack(g: Graphics) {
-            val copy=g.create() as Graphics2D
-            try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
-                val y=trackRect.y+trackRect.height/2-6
-                copy.color=Color(0x44474D); copy.fillRoundRect(trackRect.x,y,trackRect.width,12,12,12)
-                val current=xPositionForValue(slider.value)
-                copy.color=Color(0x548CF0); copy.fillRoundRect(trackRect.x,y,(current-trackRect.x).coerceAtLeast(6),12,12,12)
-                for(value in slider.minimum..slider.maximum) { copy.color=Color(0x8B8F97); copy.fillOval(xPositionForValue(value)-1,y+5,3,3) }
-            } finally { copy.dispose() }
+            val p=g.create() as Graphics2D
+            try {
+                p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
+                val left=trackRect.x-8; val y=trackRect.y+trackRect.height/2-4; val w=trackRect.width+16
+                val shape=java.awt.geom.RoundRectangle2D.Float(left.toFloat(),y.toFloat(),w.toFloat(),8f,8f,8f)
+                p.color=Color(0x44474D); p.fill(shape)
+                p.clip(shape); p.color=Color(0x548CF0); p.fillRect(left,y,(thumbRect.centerX.toInt()-left).coerceIn(0,w),8)
+                for(v in slider.minimum..slider.maximum) { p.color=Color(0x8B8F97); p.fillOval(xPositionForValue(v)-1,y+3,3,3) }
+            } finally { p.dispose() }
         }
-        override fun paintThumb(g: Graphics) { val copy=g.create() as Graphics2D
-            try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); copy.color=Color(0xF1F2F4); copy.fillOval(thumbRect.x,thumbRect.y,thumbRect.width-1,thumbRect.height-1) } finally { copy.dispose() }
+        override fun paintThumb(g: Graphics) { val p=g.create() as Graphics2D
+            try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); p.color=Color(0xF1F2F4); p.fillOval(thumbRect.x,thumbRect.y,thumbRect.width-1,thumbRect.height-1) } finally { p.dispose() }
         }
         override fun paintFocus(g: Graphics) {}
     })
+}
+
+internal class RoundCloseButton(name: String, action: () -> Unit) : JButton() {
+    init {
+        preferredSize=Dimension(20,20); minimumSize=preferredSize; isOpaque=false; isContentAreaFilled=false; isBorderPainted=false; isFocusPainted=false
+        border=EmptyBorder(0,0,0,0); getAccessibleContext().accessibleName=name; toolTipText=name; isRolloverEnabled=true; addActionListener { action() }
+    }
+    override fun paintComponent(g: Graphics) { val p=g.create() as Graphics2D
+        try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); if(model.isRollover || hasFocus()) { p.color=Color(0x4A5F78); p.fillOval((width-16)/2,(height-16)/2,16,16) }; ChatIcon("close",CHAT_MUTED,12).paintIcon(this,p,(width-12)/2,(height-12)/2) } finally { p.dispose() }
+    }
+}
+internal class SelectionChip(text: String, chipWidth: Int, remove: ()->Unit) : JPanel(BorderLayout(2,0)) {
+    init {
+        isOpaque=false; border=EmptyBorder(1,7,1,2); preferredSize=Dimension(chipWidth,22); maximumSize=preferredSize
+        add(JLabel(text).apply { font=chatFont(12f); foreground=Color(0xB5D6FF); toolTipText=text },BorderLayout.CENTER)
+        add(RoundCloseButton(if(text.startsWith("/")) "Remove skill" else "Remove plugin",remove),BorderLayout.EAST)
+    }
+    override fun paintComponent(g: Graphics) { val p=g.create() as Graphics2D
+        try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); p.color=Color(0x244568); p.fillRoundRect(0,0,width,height,10,10) } finally { p.dispose() }; super.paintComponent(g)
+    }
+}
+internal class QuietSearchField : JTextField() {
+    init { setUI(javax.swing.plaf.basic.BasicTextFieldUI()); isOpaque=false; background=Color(0x232427); foreground=CHAT_FG; caretColor=CHAT_FG; font=chatFont(12f); border=EmptyBorder(5,7,5,7) }
+    override fun paintComponent(g: Graphics) { val p=g.create() as Graphics2D
+        try { p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); p.color=background; p.fillRoundRect(0,0,width,height,10,10) } finally { p.dispose() }; super.paintComponent(g)
+    }
+}
+
+internal fun composerHeight(input: JTextArea, width: Int): Int {
+    val view=input.ui.getRootView(input)
+    view.setSize(width.toFloat(),Float.MAX_VALUE)
+    val line=input.getFontMetrics(input.font).height
+    return (kotlin.math.ceil(view.getPreferredSpan(javax.swing.text.View.Y_AXIS).toDouble()).toInt()+4).coerceIn(line+4,line*5+4)
 }

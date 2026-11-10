@@ -42,14 +42,15 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private var approvalId: String?=null
     private var decisionPending=false
     private fun customReply()=approvalId?.let { approvalDrafts.isEditing(activeId,it) }==true
-    private val files=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
+    private val files=AttachmentRow()
+    private val fileScroll=JBScrollPane(files).apply { border=EmptyBorder(0,0,0,0); isOpaque=false; viewport.isOpaque=false; hoverHorizontalScroll(); isVisible=false }
     private val selections=transparentPanel(FlowLayout(FlowLayout.LEFT,3,0))
     private val bottom=transparentPanel()
     private val connectedBottom=vertical()
     private val model=flatButton("Model ▾") { modelPopup() }
     private val context=JBLabel("Context —").apply { foreground=CHAT_MUTED; font=chatFont(12f) }
-    private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,16)) { quotaPopup() }
-    private val history=flatButton("History",icon=ChatIcon("history",CHAT_FG,16),tooltip="Prompt history") { promptHistory() }
+    private val quota=flatButton("5h —",ChatIcon("quota",CHAT_MUTED,14)) { quotaPopup() }
+    private val history=flatButton("History",icon=ChatIcon("history",CHAT_MUTED,14),tooltip="Prompt history") { promptHistory() }
     private val send=SendButton { if(customReply()) submitApproval() else if(busy()) dispatch("stop") else submit() }
     private val connect=flatButton("Connect Codex") { dispatch("connect","binary" to JsonPrimitive(state.string("binary").orEmpty())) }
     private var state=obj {}
@@ -114,8 +115,8 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         input.lineWrap=true; input.wrapStyleWord=true; input.background=COMPOSER_BG; input.foreground=CHAT_FG; input.caretColor=CHAT_FG; input.border=EmptyBorder(0,0,0,0)
         input.toolTipText=null; input.accessibleContext.accessibleName="Message Codex"
         input.font=chatFont()
-        inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,140); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars() }
-        val composeTop=vertical().apply { add(files); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
+        inputScroll=JBScrollPane(input).apply { border=EmptyBorder(0,0,0,0); viewport.background=COMPOSER_BG; preferredSize=Dimension(260,24); minimumSize=Dimension(0,24); maximumSize=Dimension(Int.MAX_VALUE,input.getFontMetrics(input.font).height*5+4); horizontalScrollBarPolicy=ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER; subtleScrollbars(); retainScrollVisibility(false) }
+        val composeTop=vertical().apply { add(fileScroll); add(selections); add(inputScroll) }; composer.add(composeTop,BorderLayout.CENTER)
         composer.add(transparentPanel(BorderLayout(4,0)).apply {
             border=EmptyBorder(3,0,0,0)
             add(flatButton(icon=ChatIcon("clip",CHAT_FG,19),tooltip="Attach file") { dispatch("attach") }.apply { preferredSize=Dimension(26,26); border=EmptyBorder(2,2,2,2) },BorderLayout.WEST)
@@ -124,10 +125,11 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         },BorderLayout.SOUTH)
         connectedBottom.add(composerShell)
         connectedBottom.add(transparentPanel(BorderLayout()).apply {
-            border=EmptyBorder(5,0,0,0)
-            add(transparentPanel(FlowLayout(FlowLayout.LEFT,8,0)).apply { add(history); add(quota) },BorderLayout.WEST); add(context,BorderLayout.EAST)
+            border=EmptyBorder(2,0,0,0)
+            add(transparentPanel(FlowLayout(FlowLayout.LEFT,4,0)).apply { add(history); add(quota) },BorderLayout.WEST); add(context,BorderLayout.EAST)
         })
         applyChatFont(connectedBottom)
+        for(button in listOf(history,quota)) { button.font=context.font; button.foreground=CHAT_MUTED; button.iconTextGap=3; button.border=EmptyBorder(1,3,1,3); button.putClientProperty("compactFooter",true) }
         input.document.addDocumentListener(object: DocumentListener {
             override fun insertUpdate(e: DocumentEvent)=changed(); override fun removeUpdate(e: DocumentEvent)=changed(); override fun changedUpdate(e: DocumentEvent)=changed()
             private fun changed() { if(!updating) { if(customReply()) { approvalDrafts.edit(activeId,approvalId!!,input.text) } else { draftThread=activeId; draftText=input.text; drafts.restart(); autocomplete.restart() }; inputResize.restart(); updateSend() } }
@@ -153,7 +155,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
                 else input.actionMap.get(previous)?.actionPerformed(ActionEvent(input,ActionEvent.ACTION_PERFORMED,""))
             }
         }
-        addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart() } })
+        addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart(); renderSelections() } })
         setupTransfers()
         transcript.onLink = { e -> if(e.eventType==javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) if(e.description?.startsWith("agent-copy:")==true) {
                 runCatching { val text=String(Base64.getUrlDecoder().decode(e.description.removePrefix("agent-copy:")),Charsets.UTF_8); Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text),null) }
@@ -168,14 +170,8 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun flushDraft() { if(drafts.isRunning) { drafts.stop(); dispatch("draft","threadId" to JsonPrimitive(draftThread),"text" to JsonPrimitive(draftText)) } }
     private fun resizeComposer() {
         if(disposed || !::inputScroll.isInitialized) return
-        val metrics=input.getFontMetrics(input.font)
         val available=(input.width.takeIf { it>0 } ?: (width-52)).coerceAtLeast(100)
-        var rows=0
-        for(line in input.text.lineSequence()) {
-            rows+=maxOf(1,kotlin.math.ceil(metrics.stringWidth(line.take(2000)).toDouble()/available).toInt())
-            if(rows>=8) break
-        }
-        val height=(rows*metrics.height+6).coerceIn(24,140)
+        val height=composerHeight(input,available)
         if(inputScroll.preferredSize.height!=height) { inputScroll.preferredSize=Dimension(260,height); connectedBottom.revalidate() }
     }
     private fun updateSend() {
@@ -232,6 +228,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             val catalog=value["models"]?.jsonArray.orEmpty().map { it.jsonObject }
             val modelName=catalog.firstOrNull { it.string("model")==chat?.string("model") }?.string("displayName") ?: chat?.string("model") ?: "Model"
             model.text=modelName+" · "+(chat?.string("effort")?.replaceFirstChar { it.uppercase() } ?: "Reasoning")+" ▾"; model.isEnabled=!busy()
+            (popup?.takeIf { !it.isDisposed && it.isVisible }?.content?.getClientProperty("modelPicker") as? ModelPickerPanel)?.updateSelection(chat?.string("model").orEmpty(),chat?.string("effort").orEmpty())
             val percent=chat?.get("contextPercent")?.jsonPrimitive?.doubleOrNull
             val stale=chat?.get("contextStale")?.jsonPrimitive?.booleanOrNull==true
             context.text=percent?.let { "Context ${it.toInt()}%" } ?: "Context —"
@@ -258,11 +255,12 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private fun renderFiles(chat: JsonObject?) {
         val next=chat?.get("files").toString(); if(next==filesSignature) return; filesSignature=next; files.removeAll()
         chat?.get("files")?.jsonArray?.forEach { value -> val file=value.jsonObject
-            files.add(flatButton(file.string("name").orEmpty()+" ×",tooltip="Remove ${file.string("name")}") { dispatch("removeAttachment","id" to file["id"]!!) }.apply {
-                file.string("preview")?.substringAfter(',')?.let { encoded -> runCatching { ImageIO.read(java.io.ByteArrayInputStream(Base64.getDecoder().decode(encoded))) }.getOrNull()?.let { icon=ImageIcon(it.getScaledInstance(28,28,Image.SCALE_SMOOTH)) } }
-            })
-        }; files.isVisible=files.componentCount>0
+            val name=file.string("name").orEmpty()
+            val preview=file.string("preview")?.substringAfter(',')?.let { encoded -> runCatching { ImageIO.read(java.io.ByteArrayInputStream(Base64.getDecoder().decode(encoded))) }.getOrNull() }
+            files.add(AttachmentCard(name,preview) { dispatch("removeAttachment","id" to file["id"]!!) })
+        }; fileScroll.isVisible=files.componentCount>0; files.revalidate(); files.repaint()
     }
+
     private fun renderNotices(value: JsonObject) {
         val list=value["notices"]?.jsonArray.orEmpty().map { it.jsonObject }.filter { it.string("threadId").let { id -> id==null || id==activeId } }.takeLast(3)
         val next=list.toString()+busy(); if(next==noticesSignature) return; noticesSignature=next; notices.removeAll()
@@ -320,28 +318,17 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         content.isFocusable=true
         val window=JBPopupFactory.getInstance().createComponentPopupBuilder(container,content)
             .setRequestFocus(true).setFocusable(true).setCancelOnClickOutside(true).setCancelOnOtherWindowOpen(true).createPopup()
+        window.addListener(object: com.intellij.openapi.ui.popup.JBPopupListener {
+            override fun onClosed(event: com.intellij.openapi.ui.popup.LightweightWindowEvent) { if(popup===window) popup=null }
+        })
         popup=window
         if(owner.isShowing) window.show(RelativePoint(owner,Point(0,-container.preferredSize.height-4)))
     }
     private fun modelPopup() {
-        val panel=vertical()
-        state["models"]?.jsonArray?.forEach { value -> val item=value.jsonObject
-            panel.add(flatButton((item.string("displayName") ?: item.string("model").orEmpty())+if(item.string("model")==chat()?.string("model")) "  ✓" else "") {
-                dispatch("model","model" to item["model"]!!); popup?.cancel()
-            }.apply { horizontalAlignment=SwingConstants.CENTER; alignmentX=Component.CENTER_ALIGNMENT; preferredSize=Dimension(200,28); minimumSize=Dimension(0,28); maximumSize=Dimension(Int.MAX_VALUE,28) })
-        }
-        panel.add(JSeparator().apply { maximumSize=Dimension(Int.MAX_VALUE,1); foreground=Color(0x45484E) }); panel.add(Box.createVerticalStrut(8)); panel.add(reasoningControls()); showPopup(model,panel,240)
-    }
-    private fun reasoningControls(): JPanel {
-        val selected=chat()?.string("model").orEmpty()
-        val entry=state["models"]?.jsonArray?.firstOrNull { it.jsonObject.string("model")==selected }?.jsonObject ?: return vertical()
-        val values=entry["supportedReasoningEfforts"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject.string("reasoningEffort") }
-        if(values.isEmpty()) return vertical()
-        val panel=vertical(); val label=JBLabel(chat()?.string("effort").orEmpty().replaceFirstChar { it.uppercase() }).apply { foreground=CHAT_FG; alignmentX=Component.CENTER_ALIGNMENT }; panel.add(label)
-        panel.add(JSlider(0,values.lastIndex,values.indexOf(chat()?.string("effort")).coerceAtLeast(0)).apply {
-            isOpaque=false; majorTickSpacing=1; snapToTicks=true; roundedReasoningTrack(); accessibleContext.accessibleName="Reasoning effort"
-            addChangeListener { label.text=values[value].replaceFirstChar { it.uppercase() }; if(!valueIsAdjusting) dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(values[value])) }
-        }); return panel
+        val picker=ModelPickerPanel(state["models"]?.jsonArray.orEmpty().map { it.jsonObject },chat()?.string("model").orEmpty(),chat()?.string("effort").orEmpty(),
+            { dispatch("model","model" to JsonPrimitive(it)) },
+            { selected,effort -> dispatch("model","model" to JsonPrimitive(selected),"effort" to JsonPrimitive(effort)) })
+        showPopup(model,picker,240); popup?.content?.putClientProperty("modelPicker",picker)
     }
     private fun quotaWindows()=state["quotaWindows"]?.jsonArray.orEmpty().map { it.jsonObject }
     private fun quotaPopup() {
@@ -363,8 +350,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     }
     private fun promptHistory() {
         historyPrompts=ChatPresentation.prompts(chat()?.get("items")?.jsonArray ?: JsonArray(emptyList()))
-        val panel=transparentPanel(BorderLayout(0,7)); val search=JTextField().apply { toolTipText="Search your prompts"; accessibleContext.accessibleName="Search your prompts" }
-        historyQuery=search; val list=JList<Prompt>().apply { background=COMPOSER_BG; foreground=CHAT_FG; fixedCellHeight=34; selectionMode=ListSelectionModel.SINGLE_SELECTION }; historyList=list
+        val panel=transparentPanel(BorderLayout(0,7)); val search=QuietSearchField().apply { toolTipText=null; accessibleContext.accessibleName="Search your prompts" }
+        historyQuery=search; val list=JList<Prompt>().apply { background=COMPOSER_BG; foreground=CHAT_FG; fixedCellHeight=30; selectionMode=ListSelectionModel.SINGLE_SELECTION
+            cellRenderer=ListCellRenderer { _, prompt, _, selected, _ -> RoundedPanel(if(selected) Color(0x254C76) else COMPOSER_BG).apply { border=EmptyBorder(5,8,5,8); add(JLabel(prompt.toString()).apply { foreground=CHAT_FG; font=chatFont(12f) }) } }
+        }; historyList=list
         panel.add(search,BorderLayout.NORTH); panel.add(JBScrollPane(list).apply { preferredSize=Dimension(330,240); border=EmptyBorder(0,0,0,0); subtleScrollbars() },BorderLayout.CENTER)
         fun choose() { list.selectedValue?.let { popup?.cancel(); pendingReveal=it.id; dispatch("revealPrompt","itemId" to JsonPrimitive(it.id)) } }
         search.document.addDocumentListener(object: DocumentListener { override fun insertUpdate(e: DocumentEvent)=filterHistory(); override fun removeUpdate(e: DocumentEvent)=filterHistory(); override fun changedUpdate(e: DocumentEvent)=filterHistory() })
@@ -423,7 +412,15 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         hideCompletions(); input.replaceRange(replacement,token.start,token.end); input.caretPosition=token.start+replacement.length; input.requestFocusInWindow()
     }
     private fun hideCompletions() { autocomplete.stop(); completionPopup?.cancel(); completionPopup=null; completionList=null; completionToken=null; pendingFileRequest=null }
-    private fun renderSelections() { selections.removeAll(); selectedSkill?.let { selections.add(flatButton("$it ×",tooltip="Remove skill") { selectedSkill=null; renderSelections() }) }; selectedPlugin?.let { selections.add(flatButton("${it.string("name")} ×",tooltip="Remove plugin") { selectedPlugin=null; renderSelections() }) }; selections.isVisible=selections.componentCount>0; selections.revalidate(); selections.repaint() }
+    private fun renderSelections() {
+        selections.removeAll()
+        val labels=listOfNotNull(selectedSkill?.let { "/"+it.removePrefix("/") },selectedPlugin?.string("name")?.let { "@"+it.removePrefix("@") })
+        val cap=(((width-52).coerceAtLeast(140)-(labels.size-1).coerceAtLeast(0)*4)/labels.size.coerceAtLeast(1)).coerceIn(64,160)
+        val chipWidth=labels.maxOfOrNull { getFontMetrics(chatFont(12f)).stringWidth(it)+32 }?.coerceIn(64,cap) ?: 64
+        selectedSkill?.let { selections.add(SelectionChip("/"+it.removePrefix("/"),chipWidth) { selectedSkill=null; renderSelections() }) }
+        selectedPlugin?.let { selections.add(SelectionChip("@"+it.string("name").orEmpty().removePrefix("@"),chipWidth) { selectedPlugin=null; renderSelections() }) }
+        selections.isVisible=selections.componentCount>0; selections.revalidate(); selections.repaint()
+    }
     private fun resumeHistory() { dispatch("history","query" to JsonPrimitive(JOptionPane.showInputDialog(this,"Search conversations","") ?: return)) }
     private fun resumeResults(event: JsonObject) {
         val entries=event["entries"]?.jsonArray.orEmpty().map { val item=it.jsonObject; Prompt(item.string("id").orEmpty(),item.string("name") ?: item.string("preview") ?: "Conversation") }.toTypedArray()

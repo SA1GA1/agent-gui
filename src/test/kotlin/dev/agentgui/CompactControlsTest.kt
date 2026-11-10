@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 class CompactControlsTest {
     @Test fun `tabs shrink to a readable minimum then overflow without wrapping`() {
         assertEquals(144,CompactTabs.tabWidth(600,2))
-        assertEquals(96,CompactTabs.tabWidth(300,3))
+        assertEquals(98,CompactTabs.tabWidth(300,3))
         assertEquals(80,CompactTabs.tabWidth(200,8))
     }
     @Test fun `chat typography is regular system text`() {
@@ -19,7 +19,7 @@ class CompactControlsTest {
         javax.swing.SwingUtilities.invokeAndWait {
             val tab=dev.agentgui.toolwindow.browserChatTab("Login fix",true,{}, {})
             val close=tab.components.filterIsInstance<javax.swing.JButton>().first { it.accessibleContext.accessibleName=="Close chat" }
-            assertEquals(22,close.preferredSize.width)
+            assertEquals(20,close.preferredSize.width)
             assertFalse(close.isBorderPainted)
         }
     }
