@@ -39,6 +39,14 @@ describe('Composer',()=>{
     expect(screen.getByText('notes.txt')).toBeTruthy();
     await user.click(screen.getByRole('button',{name:'Remove notes.txt'}));expect(calls.at(-1)).toEqual({type:'removeAttachment',threadId:'a',id:'f'});
   });
+  it('shows document formats and image thumbnails with independent removal',async()=>{
+    const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+    render(<Composer chat={{...chat,files:[{id:'doc',name:'long-notes.md',image:false},{id:'photo',name:'photo.png',image:true,preview:'data:image/png;base64,iVBORw0KGgo='}]}} state={state} onHistory={()=>{}}/>);
+    expect(screen.getByText('MD')).toBeTruthy();expect(screen.getByRole('img',{name:'photo.png'})).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole('button',{name:'Remove photo.png'}));
+    expect(calls.at(-1)).toEqual({type:'removeAttachment',threadId:'a',id:'photo'});
+    expect(screen.getByText('long-notes.md')).toBeTruthy();
+  });
   it('ignores stale file results and dismisses autocomplete with Escape',async()=>{
     const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
     render(<Composer chat={chat} state={state} onHistory={()=>{}}/>);
@@ -120,4 +128,19 @@ it('saves reasoning changes made without a pointer or a specific key event',asyn
  await userEvent.click(screen.getByRole('button',{name:'Model'}));
  fireEvent.change(screen.getByRole('slider',{name:'Reasoning effort'}),{target:{value:'1'}});
  expect(calls.at(-1)).toEqual({type:'model',threadId:'a',model:'m',effort:'high'});
+});
+
+it('keeps the model picker open when choosing a model',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ render(<Composer chat={chat} state={{...state,models:[...state.models,{...state.models[0],model:'other',displayName:'Other model'}]}} onHistory={()=>{}}/>);
+ await userEvent.click(screen.getByRole('button',{name:'Model'}));await userEvent.click(screen.getByRole('button',{name:'Other model'}));
+ expect(screen.getByRole('dialog',{name:'Models'})).toBeTruthy();expect(calls.at(-1)).toEqual({type:'model',threadId:'a',model:'other'});
+});
+
+it('shows compact prefixed skill and plugin chips with independent close actions',async()=>{
+ window.agentHost=()=>{};
+ render(<Composer chat={chat} state={{...state,skills:[{name:'review',description:'Review',path:'/review',enabled:true}],plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true}]}} onHistory={()=>{}}/>);
+ const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'/rev{Enter}@Git{Enter}');
+ expect(screen.getByText('/review').closest('.context-chip')).not.toBeNull();expect(screen.getByText('@GitHub').closest('.context-chip')).not.toBeNull();
+ await user.click(screen.getByRole('button',{name:'Remove skill'}));expect(screen.queryByText('/review')).toBeNull();expect(screen.getByText('@GitHub')).toBeTruthy();
 });
