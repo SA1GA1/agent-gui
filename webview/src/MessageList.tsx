@@ -4,7 +4,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {normalizeMath} from './mathNormalizer';
-import {useEffect,useRef,useState,type ReactNode} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {Virtuoso,type VirtuosoHandle} from 'react-virtuoso';
 import {host, type Item} from './types';
 function CopyButton({text,label,className}:{text:()=>string|undefined;label:string;className?:string}) {
@@ -25,8 +25,10 @@ export function CodeBlock({children}:{children?:ReactNode}) {
   return <div className="code-block" ref={block}><CopyButton className="copy" label="Copy code" text={()=>block.current?.querySelector('code')?.textContent ?? undefined}/><pre>{children}</pre></div>;
 }
 export function UserMessage({item}:{item:Item}) {
-  const text=item.content?.map(c=>c.type==='text'?c.text:'[Attachment]').join('\n') ?? '';
-  return <article className="message user"><div className="user-text">{item.content?.map((c,i)=><span key={i}>{c.type==='text'?c.text:c.type==='localImage'||c.type==='image'?'▧ Image':c.type}</span>)}</div><div className="message-actions">{item.sentAt&&<time dateTime={new Date(item.sentAt).toISOString()}>{new Date(item.sentAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})}</time>}<CopyButton label="Copy message" text={()=>text}/></div></article>;
+  const text=item.content?.filter(c=>!(item.sentFiles?.length&&c.type==='text'&&c.text?.startsWith('Attached file: ')&&c.text.includes('\nImmutable local snapshot: '))).map(c=>c.type==='text'?c.text:item.sentFiles?.length?'':c.type==='localImage'||c.type==='image'?'▧ Image':'[Attachment]').filter(Boolean).join('\n') ?? '';
+  const [expanded,setExpanded]=useState(false),[long,setLong]=useState(false),body=useRef<HTMLDivElement>(null);
+  useLayoutEffect(()=>{const element=body.current;if(!element)return;function measure(){const line=Number.parseFloat(getComputedStyle(element!).lineHeight)||21;setLong(element!.scrollHeight>line*14+2);}measure();const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(measure):undefined;observer?.observe(element);return()=>observer?.disconnect();},[text]);
+  return <article className="message user">{!!item.sentFiles?.length&&<div className="sent-attachments">{item.sentFiles.map(f=><div className="sent-attachment" key={f.id}>{f.preview?<img src={f.preview} alt={f.name}/>:<><span aria-hidden="true">▤</span><span>{f.name.includes('.')?f.name.slice(0,f.name.lastIndexOf('.')):f.name}<small>{f.name.split('.').at(-1)?.toUpperCase()}</small></span></>}</div>)}</div>}<div className="user-bubble"><div ref={body} className={`user-text${expanded?' expanded':''}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown></div>{long&&<button className="show-more" onClick={()=>setExpanded(!expanded)}>{expanded?'Show less ⌃':'Show more ⌄'}</button>}</div><div className="message-actions">{item.sentAt&&<time dateTime={new Date(item.sentAt).toISOString()}>{new Date(item.sentAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})}</time>}<CopyButton label="Copy message" text={()=>text}/></div></article>;
 }
 function Message({item}:{item:Item}) {
   if (item.type === 'userMessage') return <UserMessage item={item}/>;

@@ -23,3 +23,10 @@ it('user message exposes timestamp and an icon-only copy control',async()=>{
   await act(async()=>fireEvent.click(button));expect(writeText).toHaveBeenCalledWith('Keep my prompt');
   expect(screen.getByRole('button',{name:'Copied'})).toBeTruthy();
 });
+
+it('keeps normal prompts beginning with Attached file and legacy image placeholders',()=>{
+ const {rerender}=render(<UserMessage item={{id:'u',type:'userMessage',content:[{type:'text',text:'Attached file: please review report.pdf'}]}}/>);
+ expect(screen.getByText('Attached file: please review report.pdf')).toBeTruthy();
+ rerender(<UserMessage item={{id:'u',type:'userMessage',content:[{type:'localImage',path:'/tmp/legacy.png'}]}}/>);
+ expect(screen.getByText('▧ Image')).toBeTruthy();
+});

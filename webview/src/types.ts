@@ -1,4 +1,4 @@
-export type Item = {id:string;type:string;sentAt?:number;text?:string;command?:string;aggregatedOutput?:string;status?:string;content?:{type:string;text?:string;path?:string}[];changes?:{path:string}[];tool?:string;server?:string};
+export type Item = {id:string;type:string;sentAt?:number;sentFiles?:Attachment[];text?:string;command?:string;aggregatedOutput?:string;status?:string;content?:{type:string;text?:string;path?:string}[];changes?:{path:string}[];tool?:string;server?:string};
 export type Attachment = {id:string;name:string;image:boolean;preview?:string};
 export type Approval = {id:string|number;method:string;params:{threadId:string;command?:string;reason?:string;cwd?:string}};
 export type Chat = {id:string;title:string;draft:string;mentions?:import('./mentions').Mention[];open:boolean;model:string;effort:string;state:string;items:Item[];files:Attachment[];contextPercent:number|null;contextLevel:string;contextStale:boolean;approvals:Approval[]};
