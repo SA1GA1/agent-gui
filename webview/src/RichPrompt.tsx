@@ -1,4 +1,5 @@
 import {forwardRef,useLayoutEffect,useRef,useState,type KeyboardEvent,type ClipboardEvent} from 'react';
+import {fenceRanges,fenceEnter} from './promptFences';
 import {editPrompt,mentionLabel,validMentions,type Mention,type Prompt} from './mentions';
 
 type Props={text:string;caret:number;mentions:Mention[];disabled:boolean;onEdit:(p:Prompt,caret:number)=>void;onKeyDown:(e:KeyboardEvent<HTMLDivElement>)=>void;onPasteFiles:(e:ClipboardEvent<HTMLDivElement>)=>boolean;onCaret:(caret:number)=>void;onScroll:(field:HTMLDivElement)=>void};
@@ -26,11 +27,14 @@ export const RichPrompt=forwardRef<HTMLDivElement,Props>(function RichPrompt({te
   if(previous.current.text!==text||JSON.stringify(previous.current.mentions)!==signature){if(document.activeElement===root){history.current.push(previous.current);if(history.current.length>100)history.current.shift();}else{history.current=[];redo.current=[];}previous.current={text,mentions};}
   const existing=Array.from(root.querySelectorAll('[data-mention]')).map(n=>n.getAttribute('data-mention')).join('|');
   const desired=mentions.map(m=>JSON.stringify(m)).join('|');
-  if(root.textContent!==text||existing!==desired){
+  const fences=JSON.stringify(fenceRanges(text));
+  if(root.textContent!==text||existing!==desired||root.dataset.fences!==fences){
+   root.dataset.fences=fences;
+   function append(value:string){let offset=0;for(const range of fenceRanges(value)){root!.append(document.createTextNode(value.slice(offset,range.start)));const code=document.createElement('span');code.className='prompt-code';code.textContent=value.slice(range.start,range.end);root!.append(code);offset=range.end;}root!.append(document.createTextNode(value.slice(offset)));}
    const focused=document.activeElement===root;const targetCaret=pendingCaret.current??caret;
    root.replaceChildren();let position=0;for(const m of validMentions(text,mentions)){
-    root.append(document.createTextNode(text.slice(position,m.start)));const span=document.createElement('span');span.setAttribute('contenteditable','false');span.className='inline-mention';span.dataset.mention=JSON.stringify(m);span.textContent=mentionLabel(m);span.title=m.path;root.append(span);position=m.end;
-   }root.append(document.createTextNode(text.slice(position)));if(focused)setPromptCaret(root,targetCaret);
+    append(text.slice(position,m.start));const span=document.createElement('span');span.setAttribute('contenteditable','false');span.className='inline-mention';span.dataset.mention=JSON.stringify(m);span.textContent=mentionLabel(m);span.title=m.path;root.append(span);position=m.end;
+   }append(text.slice(position));if(focused)setPromptCaret(root,targetCaret);
   }
   if(pendingCaret.current!==undefined){setPromptCaret(root,pendingCaret.current);pendingCaret.current=undefined;}
  },[text,signature,caret,compositionEpoch]);
@@ -53,6 +57,7 @@ export const RichPrompt=forwardRef<HTMLDivElement,Props>(function RichPrompt({te
    if(mentions.some(m=>a<m.end&&b>m.start)){e.preventDefault();const r=editPrompt({text,mentions},a,b,'');commit(r,r.caret);return;}
   }
   if(e.key==='Enter'&&e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const [start,end]=promptSelection(local.current!);const r=editPrompt({text,mentions},start,end,'\n');commit(r,r.caret);return;}
+  if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){const [start,end]=promptSelection(local.current!);const addition=fenceEnter(text,start);if(addition!==undefined){e.preventDefault();const r=editPrompt({text,mentions},start,end,addition);commit(r,start+1);return;}}
   onKeyDown(e);
  }}/>
 });

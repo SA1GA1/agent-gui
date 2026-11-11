@@ -152,7 +152,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             override fun caretPositionChanged(e: InputMethodEvent) {}
         })
         bind(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,0),"send") {
-            if(input.getClientProperty("composing")!=true) { if(completionOpen) completionList?.selectedValue?.action?.invoke() else if(customReply()) submitApproval() else if(!busy() && approvalId==null) submit() }
+            if(input.getClientProperty("composing")!=true) { if(completionOpen) completionList?.selectedValue?.action?.invoke() else if(PromptFences.enter(input.text,input.caretPosition)!=null) { val caret=input.caretPosition; val addition=PromptFences.enter(input.text,caret)!!; input.replaceSelection(addition); if(addition.length>1) input.caretPosition=caret+1 } else if(customReply()) submitApproval() else if(!busy() && approvalId==null) submit() }
         }
         input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER,InputEvent.SHIFT_DOWN_MASK),"insert-break")
         bind(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE,0),"dismiss") {

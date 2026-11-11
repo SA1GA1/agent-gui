@@ -28,7 +28,7 @@ internal class ComposerTextArea : JTextPane() {
     private var pendingReference: Reference?=null
     private var restoring=false
     init {
-        font=chatFont(); foreground=CHAT_FG; background=COMPOSER_BG
+        font=chatFont(); foreground=CHAT_FG; background=COMPOSER_BG; isOpaque=false
         (document as AbstractDocument).documentFilter=object: DocumentFilter() {
             override fun insertString(fb: FilterBypass,offset: Int,string: String?,attr: AttributeSet?)=replace(fb,offset,0,string,attr)
             override fun remove(fb: FilterBypass,offset: Int,length: Int)=replace(fb,offset,length,"",null)
@@ -99,6 +99,16 @@ internal class ComposerTextArea : JTextPane() {
     fun redoDraft() { if(undo.canRedo()) undo.redo() }
     override fun getScrollableTracksViewportWidth()=true
     override fun paintComponent(g: Graphics) {
+        g.color=background;g.fillRect(0,0,width,height)
+        val painter=g.create() as java.awt.Graphics2D
+        try {
+            painter.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,java.awt.RenderingHints.VALUE_ANTIALIAS_ON)
+            painter.color=Color(0x1A1B1E)
+            PromptFences.ranges(text).forEach { range ->
+                val first=modelToView2D(range.first.coerceAtMost(document.length));val last=modelToView2D(range.last.coerceAtMost(document.length))
+                if(first!=null && last!=null) painter.fillRoundRect(insets.left,first.y.toInt(),(width-insets.left-insets.right).coerceAtLeast(0),(last.maxY-first.y).toInt(),14,14)
+            }
+        } finally { painter.dispose() }
         super.paintComponent(g)
         if(document.length==0 && !hasFocus()) {
             val copy=g.create() as java.awt.Graphics2D

@@ -163,3 +163,13 @@ it('clears the submitted draft on acknowledgement even when busy state was too b
  act(()=>window.dispatchEvent(new CustomEvent('agent-state',{detail:{type:'submitted',threadId:'a',requestId:sent?.requestId}})));
  expect(screen.getByRole('textbox').textContent).toBe('');
 });
+
+it('keeps Enter inside a fenced prompt instead of sending it',async()=>{
+ const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
+ render(<Composer chat={chat} state={state} onHistory={()=>{}}/>);
+ const user=userEvent.setup();const field=screen.getByRole('textbox');await user.click(field);
+ await user.type(field,'```kotlin{Enter}val x = 1{Enter}');
+ expect(field.textContent).toContain('```kotlin\nval x = 1\n\n```');
+ expect(field.querySelector('.prompt-code')).toBeTruthy();
+ expect(calls.filter(c=>c.type==='send')).toHaveLength(0);
+});
