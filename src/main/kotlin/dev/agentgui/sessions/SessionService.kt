@@ -31,6 +31,7 @@ class SessionService(private val project: Project) : Disposable {
     private val store get() = project.service<SessionUiState>().state
     private var process: CodexProcess? = null
     private val attachments = AttachmentService()
+    private val sentPreviews=SentPreviewCache { attachments.preview(it,72) }
     private val sessions = linkedMapOf<String, Chat>()
     private val warmup get() = service<WindowWarmupState>()
     private val owner = project.locationHash
@@ -492,13 +493,19 @@ class SessionService(private val project: Project) : Disposable {
             noticeExpiry = next?.let { deadline -> worker.schedule({ noticeExpiryAt = null; noticeExpiry = null; if (!disposed) publish() }, (deadline - now).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
         }
         warmup.activity(owner, warmThread != null || queue.isNotEmpty() || sessions.values.any { it.state != "idle" })
+        val active=sessions[store.activeId]
+        sentPreviews.retain(((active?.items?.values?.toList()?.takeLast(100)).orEmpty()+(active?.revealedItems?.take(10)).orEmpty()).flatMap(SentAttachments::files))
         listener?.invoke(obj {
             put("notices", JsonArray(notices.toList().takeLast(40).map { it.json() })); put("quotaWindows", quotaWindows()); put("autoWindowEnabled", warmup.state.enabled)
             put("type", "state"); put("connected", connected); put("signedIn", signedIn); put("status", status); put("version", version); put("binary", store.binary)
             put("cwd", cwd); put("branch", branch); put("activeId", store.activeId); put("models", models); put("history", history); put("historyCursor", historyCursor); put("skills", extensions); put("plugins", plugins)
             put("sessions", buildJsonArray { sessions.values.forEach { chat -> add(obj {
                 put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("state", chat.state)
-                put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()).map(chat.promptTimes::decorate) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
+                put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()).map { item ->
+                    val files=SentAttachments.files(item)
+                    val decorated=chat.promptTimes.decorate(item)
+                    if(files.isEmpty()) decorated else JsonObject(decorated+("sentFiles" to JsonArray(files.map { file -> JsonObject(file+("preview" to (sentPreviews.preview(file)?.let(::JsonPrimitive) ?: JsonNull))) })))
+                } else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
                 put("files", buildJsonArray { chat.files.forEach { f -> add(JsonObject(f + ("preview" to (runCatching { if (chat.id == store.activeId) attachments.preview(f) else null }.getOrNull()?.let(::JsonPrimitive) ?: JsonNull)))) } })
                 put("approvals", JsonArray(approvals.values.filter { it["params"]?.jsonObject?.string("threadId") == chat.id }))
             }) } })

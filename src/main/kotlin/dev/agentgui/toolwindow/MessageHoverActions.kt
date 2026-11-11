@@ -24,7 +24,7 @@ internal class MessageHoverActions : JPanel(FlowLayout(FlowLayout.RIGHT,7,0)) {
     init { isOpaque=false; preferredSize=Dimension(100,22); add(time);add(copy);time.isVisible=false;copy.isVisible=false }
     private fun copyFeedback() { copy.icon=ChatIcon("check",CHAT_MUTED,16); copy.toolTipText="Copied";reset.restart() }
     fun update(item: JsonObject) {
-        text=ChatPresentation.userText(item)
+        text=ChatPresentation.messageText(item)
         time.text=(item["sentAt"] as? JsonPrimitive)?.longOrNull?.let { DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it)) }.orEmpty()
     }
     fun install(owner: JComponent) {

@@ -17,7 +17,7 @@ internal class AttachmentRow : JPanel(FlowLayout(FlowLayout.LEFT,6,3)), Scrollab
     override fun getScrollableBlockIncrement(r:Rectangle,o:Int,d:Int)=maxOf(40,r.width-80)
 }
 
-internal class AttachmentCard(name:String, private val preview:BufferedImage?, remove:()->Unit) : JPanel(BorderLayout(6,0)) {
+internal class AttachmentCard(name:String, private val preview:BufferedImage?, removable:Boolean=true, remove:()->Unit) : JPanel(BorderLayout(6,0)) {
     init {
         isOpaque=false; preferredSize=Dimension(if(preview==null) 120 else 72,72)
         border=EmptyBorder(5,8,5,4); toolTipText=name
@@ -28,7 +28,7 @@ internal class AttachmentCard(name:String, private val preview:BufferedImage?, r
             val format=JLabel((if(name.lastIndexOf('.')>0) name.substringAfterLast('.').ifEmpty { "FILE" } else "FILE").uppercase()).apply { font=chatFont(11f); foreground=CHAT_MUTED }
             add(transparentPanel(GridLayout(2,1,0,1)).apply { border=EmptyBorder(15,0,15,0); add(title);add(format) })
         }
-        add(transparentPanel(BorderLayout()).apply { add(close,BorderLayout.NORTH) },BorderLayout.EAST)
+        if(removable) add(transparentPanel(BorderLayout()).apply { add(close,BorderLayout.NORTH) },BorderLayout.EAST)
         getAccessibleContext().accessibleName=name
     }
     override fun paintComponent(g:Graphics) {

@@ -11,14 +11,15 @@ import javax.swing.event.HyperlinkEvent
 internal class NativeTranscript : JPanel(null), Scrollable {
     var onLink: (HyperlinkEvent)->Unit = {}
     private var thread=""
+    private val expanded=mutableSetOf<String>()
     private var items=emptyList<JsonObject>()
     private var target: String?=null
     private var empty=""
     private val views=linkedMapOf<String,Bubble>()
-    private class Bubble(val panel: JPanel,val editor: JEditorPane,val user: Boolean,val actions: MessageHoverActions?=null,var signature: String="",var measuredWidth: Int=-1,var height: Int=0)
+    private class Bubble(val panel: JPanel,val editor: JEditorPane,val user: Boolean,val actions: MessageHoverActions?=null,val more: JButton?=null,val attachments: JScrollPane?=null,var signature: String="",var measuredWidth: Int=-1,var height: Int=0)
     init { background=CHAT_BG; border=EmptyBorder(4,4,6,4) }
     fun showItems(threadId: String,values: JsonArray,emptyText: String) {
-        if(thread!=threadId) { thread=threadId; target=null; views.clear(); removeAll() }
+        if(thread!=threadId) { thread=threadId; target=null; expanded.clear(); views.clear(); removeAll() }
         items=values.map { it.jsonObject }.filter { it.string("type") in setOf("userMessage","agentMessage","plan","commandExecution","fileChange","mcpToolCall") }
         empty=emptyText
         rebuild()
@@ -40,6 +41,7 @@ internal class NativeTranscript : JPanel(null), Scrollable {
         views.keys.filter { it !in ids }.forEach { key -> views.remove(key)?.let { remove(it.panel) } }
         content.forEachIndexed { index,item ->
             val id=item.string("id").orEmpty(); val user=item.string("type")=="userMessage"; val isEmpty=item.string("type")=="empty"
+            views[id]?.takeIf { user && it.signature.isNotEmpty() && it.signature!=item.toString() }?.let { remove(it.panel);views.remove(id) }
             val view=views.getOrPut(id) {
                 val editor=JEditorPane().apply {
                     editorKit=MathEditorKit()
@@ -48,18 +50,35 @@ internal class NativeTranscript : JPanel(null), Scrollable {
                     addHyperlinkListener {
                         if(it.eventType==HyperlinkEvent.EventType.ENTERED) cursor=Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                         else if(it.eventType==HyperlinkEvent.EventType.EXITED) cursor=Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
-                        onLink(it)
+                        if(it.eventType==HyperlinkEvent.EventType.ACTIVATED && it.description?.startsWith("agent-expand:")==true) {
+                            val key=String(java.util.Base64.getUrlDecoder().decode(it.description.removePrefix("agent-expand:")),Charsets.UTF_8)
+                            if(!expanded.add(key)) expanded.remove(key)
+                            views[key]?.let { bubble -> bubble.signature="";bubble.measuredWidth=-1 };rebuild()
+                        } else onLink(it)
                     }
                 }
-                val card=(if(user) RoundedPanel(Color(0x1B467E)) else transparentPanel()).apply { border=EmptyBorder(7,10,7,10); add(editor) }
+                val more=if(user) flatButton("Show more ⌄") {
+                    if(!expanded.add(id)) expanded.remove(id)
+                    views[id]?.let { bubble -> bubble.measuredWidth=-1 };revalidate();repaint()
+                }.apply { foreground=CHAT_MUTED; horizontalAlignment=SwingConstants.LEFT; isVisible=false } else null
+                val card=(if(user) RoundedPanel(Color(0x1B467E)) else transparentPanel()).apply { border=EmptyBorder(7,10,7,10); add(editor); more?.let { add(it,BorderLayout.SOUTH) } }
+                val attachmentRow=if(user) AttachmentRow().apply {
+                    (item["sentFiles"] as? JsonArray).orEmpty().forEach { value ->
+                        val file=value.jsonObject
+                        val preview=file.string("preview")?.let { runCatching { javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(java.util.Base64.getDecoder().decode(it.substringAfter(",")))) }.getOrNull() }
+                        add(AttachmentCard(file.string("name").orEmpty(),preview,false) {})
+                    }
+                } else null
+                val attachmentScroll=attachmentRow?.takeIf { it.componentCount>0 }?.let { row -> JScrollPane(row).apply { border=EmptyBorder(0,0,0,0);isOpaque=false;viewport.isOpaque=false;preferredSize=Dimension(240,82);hoverHorizontalScroll() } }
                 val actions=if(user) MessageHoverActions() else null
                 val holder=transparentPanel(BorderLayout()).apply {
                     border=EmptyBorder(4,if(user) 42 else 0,8,if(user) 0 else 18)
                     add(if(isEmpty) editor else card,BorderLayout.CENTER)
                     actions?.let { add(it,BorderLayout.SOUTH) }
+                    attachmentScroll?.let { header -> add(transparentPanel(FlowLayout(FlowLayout.RIGHT,0,0)).apply { add(header) },BorderLayout.NORTH) }
                 }
                 actions?.install(holder)
-                Bubble(holder,editor,user,actions).also { add(holder) }
+                Bubble(holder,editor,user,actions,more,attachmentScroll).also { add(holder) }
             }
             setComponentZOrder(view.panel,index)
             val signature=item.toString()
@@ -67,10 +86,10 @@ internal class NativeTranscript : JPanel(null), Scrollable {
                 view.actions?.update(item)
                 view.signature=signature; view.measuredWidth=-1
                 val body=when(item.string("type")) {
-                    "userMessage" -> SafeMarkdown.escape(ChatPresentation.userText(item)).replace("\n","<br>")
+                    "userMessage" -> SafeMarkdown.render(ChatPresentation.messageText(item)).replace("bgcolor='#222427'","bgcolor='#345B8A'")
                     "agentMessage","plan" -> SafeMarkdown.render(item.string("text").orEmpty())
                     "empty" -> "<p style='color:#a8abb1'>${SafeMarkdown.escape(empty)}</p>"
-                    else -> ChatPresentation.renderItem(item)
+                    else -> ChatPresentation.renderItem(item,id in expanded)
                 }
                 view.editor.text="<html><head><style>body{line-height:1.45;font-weight:normal;color:#e7e8eb;margin:0}p{margin:6px 0 8px 0}pre{margin:0}div.code-block{margin:10px 0}table.code{border:1px solid #3b3e44}table.code td{padding:7px}a{color:#93bbf7}a.copy{text-decoration:none;color:#abb2be}</style></head><body>$body</body></html>"
             }
@@ -82,8 +101,14 @@ internal class NativeTranscript : JPanel(null), Scrollable {
             view.panel.border=EmptyBorder(4,if(view.user) (available*.28).toInt() else 6,8,if(view.user) 4 else 6)
             val insets=view.panel.insets
             val inner=(available-insets.left-insets.right-20).coerceAtLeast(100)
+            view.attachments?.let { it.preferredSize=Dimension(minOf(inner,it.viewport.view.preferredSize.width),82) }
             view.editor.setSize(inner,Short.MAX_VALUE.toInt())
-            view.height=view.editor.preferredSize.height+insets.top+insets.bottom+14+(view.actions?.preferredSize?.height ?: 0)
+            val full=view.editor.preferredSize.height
+            val limit=view.editor.getFontMetrics(view.editor.font).height*14
+            val long=view.user && full>limit
+            view.more?.let { it.isVisible=long;it.text=if(views.entries.firstOrNull { entry -> entry.value===view }?.key in expanded) "Show less ⌃" else "Show more ⌄" }
+            val clipped=long && views.entries.firstOrNull { it.value===view }?.key !in expanded
+            view.height=(if(clipped) limit else full)+insets.top+insets.bottom+14+(view.actions?.preferredSize?.height ?: 0)+(if(long) view.more?.preferredSize?.height ?: 0 else 0)+(view.attachments?.preferredSize?.height ?: 0)
             view.measuredWidth=available
         }
         return view.height

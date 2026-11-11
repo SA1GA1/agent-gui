@@ -108,23 +108,24 @@ class AttachmentService(private val root: Path = Path.of(PathManager.getSystemPa
         }
         return obj { put("type", "text"); put("text", content) }
     }
-    fun preview(attachment: JsonObject): String? {
+    fun preview(attachment: JsonObject, edge:Int=192): String? {
+        require(edge in 32..192)
         if (attachment["image"]?.jsonPrimitive?.booleanOrNull != true) return null
         val path = resolve(attachment["id"]!!.jsonPrimitive.content)
         if (!Files.exists(path)) return null
-        return previews.getOrPut(path.toString()) {
+        return previews.getOrPut("$path:$edge") {
             val image = ImageIO.createImageInputStream(path.toFile()).use { source ->
                 val reader = ImageIO.getImageReaders(source).asSequence().firstOrNull() ?: return null
                 try {
                     reader.input = source
                     val width = reader.getWidth(0); val height = reader.getHeight(0)
                     require(width.toLong() * height <= 100_000_000) { "Image resolution is too large" }
-                    val sample = maxOf(1, maxOf(width, height) / 192)
+                    val sample = maxOf(1, maxOf(width, height) / edge)
                     val params = reader.defaultReadParam.apply { setSourceSubsampling(sample, sample, 0, 0) }
                     reader.read(0, params)
                 } finally { reader.dispose() }
             }
-            val scale = minOf(1.0, 192.0 / maxOf(image.width, image.height))
+            val scale = minOf(1.0, edge.toDouble() / maxOf(image.width, image.height))
             val thumb = BufferedImage(maxOf(1, (image.width * scale).toInt()), maxOf(1, (image.height * scale).toInt()), BufferedImage.TYPE_INT_ARGB)
             val graphics = thumb.createGraphics()
             try { graphics.drawImage(image, 0, 0, thumb.width, thumb.height, null) } finally { graphics.dispose() }
@@ -133,7 +134,7 @@ class AttachmentService(private val root: Path = Path.of(PathManager.getSystemPa
             "data:image/png;base64," + Base64.getEncoder().encodeToString(output.toByteArray())
         }
     }
-    fun remove(id: String) { val path = resolve(id); previews.remove(path.toString()); Files.deleteIfExists(path) }
+    fun remove(id: String) { val path = resolve(id); previews.keys.removeAll { it.startsWith("$path:") }; Files.deleteIfExists(path) }
 
     private fun resolve(id: String): Path {
         require(id.isNotBlank() && Path.of(id).fileName.toString() == id && id != "." && id != "..")
