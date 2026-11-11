@@ -15,7 +15,10 @@ class MarkdownTest {
     @Test fun `renders headings code but never embeds active HTML or remote images`() {
         val html=SafeMarkdown.render("# Hello\n\n```kotlin\nval x = 1\n```\n\n<script>alert(1)</script>\n\n![secret](https://example.invalid/track)")
         assertTrue(html.contains("<h1>Hello</h1>")); assertTrue(html.contains("<pre><code"))
-        assertFalse(html.contains("<script>"));assertFalse(html.contains("<img"));assertFalse(html.contains("src="))
+        assertFalse(html.contains("<script>"))
+        val sources=Regex("<img[^>]*src=['\"]([^'\"]+)['\"]").findAll(html).map { it.groupValues[1] }.toList()
+        assertEquals(listOf("agent-icon:copy"),sources)
+        assertFalse(html.contains("https://example.invalid/track"))
     }
 
     @Test fun `renders latex locally while retaining exact formula in accessible fallback`() {

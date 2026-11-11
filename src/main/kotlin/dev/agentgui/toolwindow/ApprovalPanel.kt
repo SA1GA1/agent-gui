@@ -10,7 +10,7 @@ import java.awt.event.*
 import javax.swing.*
 import javax.swing.border.EmptyBorder
 
-/** Local keyboard scope; no IDE-global key handlers and no focus theft on arrival. */
+/** Local list navigation; focus moves here only while the user is inside this chat. */
 internal class ApprovalPanel(request: JsonObject, changes: String, private val choose: (String) -> Unit) : JPanel(BorderLayout(0, 3)) {
     val choices = ApprovalFlow.choices(request)
     val list = JList(choices.mapIndexed { i, choice -> "${i + 1}.  ${choice.label}" }.toTypedArray())
@@ -52,5 +52,11 @@ internal class ApprovalPanel(request: JsonObject, changes: String, private val c
         list.addMouseListener(object: MouseAdapter() { override fun mouseClicked(e: MouseEvent) { val index=list.locationToIndex(e.point); if(index>=0 && list.getCellBounds(index,index).contains(e.point)) choose(choices[index].decision) } })
         add(JBScrollPane(list).apply { border=EmptyBorder(0,0,0,0); preferredSize=Dimension(240,96); maximumSize=Dimension(Int.MAX_VALUE,180); subtleScrollbars() },BorderLayout.CENTER)
     }
+    fun moveSelection(delta: Int) {
+        list.selectedIndex=(list.selectedIndex+delta).coerceIn(0,choices.lastIndex)
+        list.ensureIndexIsVisible(list.selectedIndex)
+    }
+    fun chooseSelection() { choose(choices[list.selectedIndex.coerceAtLeast(0)].decision) }
+    fun focusOptions() { list.requestFocusInWindow() }
     fun focusCustom() { list.selectedIndex=choices.lastIndex; list.requestFocusInWindow() }
 }

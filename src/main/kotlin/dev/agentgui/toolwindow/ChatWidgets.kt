@@ -61,6 +61,11 @@ internal class ChatIcon(private val kind: String, private val color: Color = CHA
             p.translate(x,y); p.scale(size/20.0,size/20.0); p.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON)
             p.color=if(c?.isEnabled==false) CHAT_MUTED else color; p.stroke=BasicStroke(1.6f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND)
             when(kind) {
+                "check" -> { p.drawLine(4,10,8,14); p.drawLine(8,14,16,5) }
+                "copy" -> {
+                    val back=Path2D.Double(); back.moveTo(7.0,5.0); back.lineTo(7.0,4.0); back.quadTo(7.0,2.0,9.0,2.0); back.lineTo(16.0,2.0); back.quadTo(18.0,2.0,18.0,4.0); back.lineTo(18.0,11.0); back.quadTo(18.0,13.0,16.0,13.0); back.lineTo(15.0,13.0); p.draw(back)
+                    p.drawRoundRect(2,6,12,12,4,4)
+                }
                 "history" -> { p.draw(Ellipse2D.Double(2.5,2.5,15.0,15.0)); p.drawLine(10,5,10,10); p.drawLine(10,10,13,12) }
                 "clip" -> { val path=Path2D.Double(); path.moveTo(7.0,10.0); path.lineTo(7.0,5.5); path.curveTo(7.0,0.5,15.5,0.5,15.5,5.5); path.lineTo(15.5,13.5); path.curveTo(15.5,21.0,3.5,21.0,3.5,13.5); path.lineTo(3.5,6.0); path.moveTo(7.0,5.5); path.lineTo(7.0,13.5); path.curveTo(7.0,16.5,12.0,16.5,12.0,13.5); path.lineTo(12.0,6.0); p.rotate(.55,10.0,10.0); p.draw(path) }
                 "quota" -> { p.draw(Ellipse2D.Double(2.5,2.5,15.0,15.0)); p.fill(Arc2D.Double(2.5,2.5,15.0,15.0,0.0,90.0,Arc2D.PIE)) }
@@ -126,9 +131,9 @@ internal class SendButton(action: () -> Unit) : JButton() {
     override fun paintComponent(g: Graphics) {
         val copy=g.create() as Graphics2D
         try { copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON); copy.color=if(isEnabled) Color(0xECEDEF) else Color(0x777A80)
-            val diameter=minOf(width,height,28)-1; val left=(width-diameter)/2; val top=(height-diameter)/2; copy.fillOval(left,top,diameter,diameter)
+            val diameter=minOf(width,height,28)-(if(working) 7 else 1); val left=(width-diameter)/2; val top=(height-diameter)/2; copy.fillOval(left,top,diameter,diameter)
             ChatIcon(if(working) "stop" else "arrow",CHAT_BG,18).paintIcon(this,copy,(width-18)/2,(height-18)/2)
-            if(working) { copy.color=CHAT_MUTED; copy.stroke=BasicStroke(1.5f); copy.drawArc(left-2,top-2,diameter+4,diameter+4,phase,85) }
+            if(working) { copy.color=CHAT_MUTED; copy.stroke=BasicStroke(1.5f); val ring=minOf(width,height,28)-3; copy.stroke=BasicStroke(1.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND); copy.drawArc((width-ring)/2,(height-ring)/2,ring,ring,phase,85) }
         } finally { copy.dispose() }
     }
     override fun addNotify() { super.addNotify(); if(working) activity.start() }
@@ -183,7 +188,17 @@ internal fun browserChatTab(title: String,selected: Boolean,onSelect: ()->Unit,o
     }
     panel.preferredSize=Dimension(144,30)
     panel.add(flatButton(title,tooltip=title,action=onSelect).apply { horizontalAlignment=SwingConstants.LEFT; foreground=if(selected) CHAT_FG else CHAT_MUTED; border=EmptyBorder(4,9,4,3); font=chatFont(12f) },BorderLayout.CENTER)
-    if(selected) panel.add(RoundCloseButton("Close chat",onClose),BorderLayout.EAST)
+    val close=RoundCloseButton("Close chat",onClose).apply { isVisible=selected }
+    panel.add(close,BorderLayout.EAST)
+    val hover=object:MouseAdapter() {
+        override fun mouseEntered(e:MouseEvent) { close.isVisible=true;panel.revalidate();panel.repaint() }
+        override fun mouseExited(e:MouseEvent) {
+            val point=SwingUtilities.convertPoint(e.component,e.point,panel)
+            if(!panel.contains(point)) { close.isVisible=selected;panel.revalidate();panel.repaint() }
+        }
+    }
+    panel.addMouseListener(hover);panel.components.forEach { it.addMouseListener(hover) }
+
     return panel
 }
 internal fun JSlider.roundedReasoningTrack() {

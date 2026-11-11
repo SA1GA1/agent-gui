@@ -20,7 +20,7 @@ object SafeMarkdown {
                 val copy=Base64.getUrlEncoder().withoutPadding().encodeToString(code.literal.toByteArray(Charsets.UTF_8))
                 val escaped=escape(code.literal)
                 val highlighted=Regex("\\b(fun|val|var|class|return|if|else|when|true|false|null|import|def|const|let|function)\\b").replace(escaped) { "<font color='#bf9cf1'>${it.value}</font>" }
-                context.writer.raw("<table class='code' width='100%' cellspacing='0' cellpadding='8' bgcolor='#222427'><tr><td><font color='#b2b7c0'>$language</font></td><td align='right'><a class='copy' href='agent-copy:$copy'>Copy ▢</a></td></tr><tr><td colspan='2'><pre><code>$highlighted</code></pre></td></tr></table>")
+                context.writer.raw("<div class='code-block'><table class='code' width='100%' cellspacing='0' cellpadding='8' bgcolor='#222427'><tr><td><font color='#b2b7c0'>$language</font></td><td align='right'><a class='copy' href='agent-copy:$copy'><img src='agent-icon:copy' alt='Copy' width='16' height='16'></a></td></tr><tr><td colspan='2'><pre><code>$highlighted</code></pre></td></tr></table></div>")
             }
         } }.build()
     fun render(text: String): String {

@@ -24,4 +24,14 @@ class CompactControlsTest {
         }
     }
 
+    @Test fun `inactive tabs expose close on hover without selecting the chat`() {
+        javax.swing.SwingUtilities.invokeAndWait {
+            var selected=false;var closed=false
+            val tab=dev.agentgui.toolwindow.browserChatTab("Other",false,{selected=true},{closed=true}).apply { setSize(120,30) }
+            val close=tab.components.filterIsInstance<javax.swing.JButton>().first { it.accessibleContext.accessibleName=="Close chat" }
+            assertFalse(close.isVisible)
+            tab.dispatchEvent(java.awt.event.MouseEvent(tab,java.awt.event.MouseEvent.MOUSE_ENTERED,0,0,5,5,0,false))
+            assertTrue(close.isVisible);close.doClick();assertTrue(closed);assertFalse(selected)
+        }
+    }
 }

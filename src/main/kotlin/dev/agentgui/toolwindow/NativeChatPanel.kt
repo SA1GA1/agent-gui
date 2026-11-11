@@ -41,6 +41,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
     private var approvalView: ApprovalPanel?=null
     private var approvalId: String?=null
     private var decisionPending=false
+    private val approvalKeys=ApprovalKeyScope(this) { approvalView?.takeIf { !customReply() && !decisionPending } }
+    override fun addNotify() { super.addNotify(); KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(approvalKeys) }
+    override fun removeNotify() { KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(approvalKeys); super.removeNotify() }
     private fun customReply()=approvalId?.let { approvalDrafts.isEditing(activeId,it) }==true
     private val files=AttachmentRow()
     private val fileScroll=JBScrollPane(files).apply { border=EmptyBorder(0,0,0,0); isOpaque=false; viewport.isOpaque=false; hoverHorizontalScroll(); isVisible=false }
@@ -133,7 +136,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         },BorderLayout.SOUTH)
         connectedBottom.add(composerShell)
         connectedBottom.add(transparentPanel(BorderLayout()).apply {
-            border=EmptyBorder(2,0,0,0)
+            border=EmptyBorder(8,0,0,0)
             add(transparentPanel(FlowLayout(FlowLayout.LEFT,4,0)).apply { add(history); add(quota) },BorderLayout.WEST); add(context,BorderLayout.EAST)
         })
         applyChatFont(connectedBottom)
@@ -166,7 +169,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         addComponentListener(object: ComponentAdapter() { override fun componentResized(e: ComponentEvent?) { inputResize.restart() } })
         setupTransfers()
         transcript.onLink = { e -> if(e.eventType==javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) if(e.description?.startsWith("agent-copy:")==true) {
-                runCatching { val text=String(Base64.getUrlDecoder().decode(e.description.removePrefix("agent-copy:")),Charsets.UTF_8); Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text),null) }
+                runCatching { val text=String(Base64.getUrlDecoder().decode(e.description.removePrefix("agent-copy:")),Charsets.UTF_8); Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text),null); (e.source as? JEditorPane)?.let { CodeCopyFeedback.show(it,e.description,e.sourceElement?.startOffset) } }
             } else e.url?.toString()?.let { if(it.startsWith("https://")||it.startsWith("http://")) BrowserUtil.browse(it) } }
         connect.componentPopupMenu=JPopupMenu().apply { add(JMenuItem("Settings").apply { addActionListener { settings() } }) }
         service.listener=sink; dispatch("ready")
@@ -319,6 +322,11 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
                     }
                 }
             }; approval.add(approvalView); applyChatFont(approval)
+            val shown=approvalView
+            SwingUtilities.invokeLater {
+                val owner=KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                if(approvalView===shown && !customReply() && isShowing && owner!=null && SwingUtilities.isDescendingFrom(owner,this)) shown?.focusOptions()
+            }
             if(approvalDrafts.isEditing(activeId,id!!)) replaceInput(approvalDrafts.enter(activeId,id,chat?.string("draft").orEmpty()))
         }
         val live=state["sessions"]?.jsonArray.orEmpty().flatMap { session -> session.jsonObject["approvals"]?.jsonArray.orEmpty().map { session.jsonObject.string("id").orEmpty() to it.jsonObject["id"]!!.jsonPrimitive.content } }.toSet()
@@ -407,8 +415,9 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         if(token.marker=='/') {
             for((command,detail) in listOf("new" to "Start a new chat","compact" to "Compact current context","model" to "Choose model","resume" to "Resume a conversation","status" to "Show status","settings" to "Plugin settings")) if(command.contains(token.query,true)) options.add(Suggestion("/$command",detail) { replaceToken("/$command ") })
             state["skills"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { skill -> options.add(Suggestion(skill.string("name").orEmpty(),skill.string("description") ?: "Skill") { replaceMention("skill",skill.string("name").orEmpty(),skill.string("path")) }) }
-        } else {
             state["plugins"]?.jsonArray?.map { it.jsonObject }?.filter { it["enabled"]?.jsonPrimitive?.booleanOrNull!=false && it.string("name").orEmpty().contains(token.query,true) }?.forEach { plugin -> options.add(Suggestion(plugin.string("name").orEmpty(),plugin.string("description") ?: "Plugin") { replaceMention("plugin",plugin.string("name").orEmpty(),plugin.string("path") ?: plugin.string("id")) }) }
+        } else {
+
             completionFiles.forEach { path -> options.add(Suggestion(path,"Project file") { dispatch("attachProjectFile","path" to JsonPrimitive(path)); replaceMention("file",path,path) }) }
         }
         completionPopup?.cancel()
@@ -424,7 +433,7 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
             addMouseListener(object: MouseAdapter() { override fun mouseClicked(e: MouseEvent) { selectedValue?.action?.invoke() } })
         }; completionList=list
         val menu=RoundedPanel(COMPOSER_BG,Color(0x44464B)).apply { isFocusable=false; border=EmptyBorder(6,6,6,6)
-            add(if(options.isEmpty()) JBLabel(if(token.marker=='@') "No matching files or plugins" else "No matching commands or skills").apply { foreground=CHAT_MUTED; border=EmptyBorder(8,8,8,8) } else JBScrollPane(list).apply { border=EmptyBorder(0,0,0,0); subtleScrollbars() })
+            add(if(options.isEmpty()) JBLabel(if(token.marker=='@') "No matching files" else "No matching commands, skills or plugins").apply { foreground=CHAT_MUTED; border=EmptyBorder(8,8,8,8) } else JBScrollPane(list).apply { border=EmptyBorder(0,0,0,0); subtleScrollbars() })
             preferredSize=Dimension((this@NativeChatPanel.width-24).coerceIn(260,450),if(options.isEmpty()) 38 else minOf(options.size,7)*46+12)
         }
         if(input.isShowing) {
@@ -460,25 +469,10 @@ class NativeChatPanel(private val project: Project) : JPanel(BorderLayout(0,5)),
         }
     }
     private fun setupTransfers() {
-        val original=input.transferHandler
-        input.transferHandler=object: TransferHandler() {
-            override fun getSourceActions(component: JComponent)=original.getSourceActions(component)
-            override fun exportToClipboard(component: JComponent,clipboard: java.awt.datatransfer.Clipboard,action: Int)=original.exportToClipboard(component,clipboard,action)
-            override fun canImport(support: TransferSupport)=support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)||support.isDataFlavorSupported(DataFlavor.imageFlavor)||original.canImport(support)
-            override fun importData(support: TransferSupport): Boolean=try {
-                when {
-                    support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) -> { @Suppress("UNCHECKED_CAST") val dropped=support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>; dispatch("nativeAttachPaths","paths" to JsonArray(dropped.map { JsonPrimitive(it.absolutePath) })); true }
-                    support.isDataFlavorSupported(DataFlavor.imageFlavor) -> {
-                        val image=support.transferable.getTransferData(DataFlavor.imageFlavor) as Image; val width=image.getWidth(null); val height=image.getHeight(null)
-                        require(width>0 && height>0 && width.toLong()*height<=16_000_000) { "Clipboard image is too large" }
-                        val buffered=BufferedImage(width,height,BufferedImage.TYPE_INT_ARGB); val graphics=buffered.createGraphics(); try { graphics.drawImage(image,0,0,null) } finally { graphics.dispose() }
-                        val bytes=ByteArrayOutputStream(); ImageIO.write(buffered,"png",bytes); dispatch("pasteImage","name" to JsonPrimitive("Image.png"),"mime" to JsonPrimitive("image/png"),"data" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes.toByteArray()))); true
-                    }
-                    support.isDataFlavorSupported(DataFlavor.stringFlavor) -> { input.replaceSelection(support.transferable.getTransferData(DataFlavor.stringFlavor) as String); true }
-                    else -> original.importData(support)
-                }
-            } catch(e: Exception) { JOptionPane.showMessageDialog(this@NativeChatPanel,e.message ?: "Could not attach file","Attachment",JOptionPane.ERROR_MESSAGE); false }
-        }
+        input.transferHandler=ComposerTransferHandler(input,
+            { files -> dispatch("nativeAttachPaths","paths" to JsonArray(files.map { JsonPrimitive(it.absolutePath) })) },
+            { data -> dispatch("pasteImage","name" to JsonPrimitive("Image.png"),"mime" to JsonPrimitive("image/png"),"data" to JsonPrimitive(data)) },
+            { message -> JOptionPane.showMessageDialog(this,message,"Attachment",JOptionPane.ERROR_MESSAGE) })
     }
-    override fun dispose() { disposed=true; flushDraft(); popup?.cancel(); hideCompletions(); drafts.stop(); updates.stop(); inputResize.stop(); if(service.listener===sink) service.listener=null }
+    override fun dispose() { KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(approvalKeys); disposed=true; flushDraft(); popup?.cancel(); hideCompletions(); drafts.stop(); updates.stop(); inputResize.stop(); if(service.listener===sink) service.listener=null }
 }

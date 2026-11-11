@@ -24,7 +24,9 @@ class NativeApprovalTest {
         javax.swing.SwingUtilities.invokeAndWait {
             val chosen=mutableListOf<String>()
             val panel=dev.agentgui.toolwindow.ApprovalPanel(request(), "") { chosen.add(it) }
-            panel.list.selectedIndex=1
+            val down=panel.list.inputMap.get(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_DOWN,0))
+            panel.list.actionMap.get(down).actionPerformed(java.awt.event.ActionEvent(panel.list,0,""))
+            assertEquals(1,panel.list.selectedIndex)
             assertTrue(chosen.isEmpty())
             panel.list.actionMap.get("choose").actionPerformed(java.awt.event.ActionEvent(panel.list,0,""))
             assertEquals(listOf("acceptForSession"),chosen)
@@ -38,6 +40,31 @@ class NativeApprovalTest {
             val longRequest=obj { put("id",42); put("method","item/commandExecution/requestApproval"); put("params",obj { put("reason",("Long permission explanation\n").repeat(1000)); put("command","echo test") }) }
             val panel=dev.agentgui.toolwindow.ApprovalPanel(longRequest, "") {}
             assertTrue(panel.preferredSize.height < 350, "Approval height must stay bounded")
+        }
+    }
+
+    @Test fun `approval keys bypass focused tab scrolling but do not capture custom replies or other windows`() {
+        javax.swing.SwingUtilities.invokeAndWait {
+            val decisions=mutableListOf<String>()
+            val root=javax.swing.JPanel()
+            val tabs=javax.swing.JScrollBar();root.add(tabs)
+            val panel=dev.agentgui.toolwindow.ApprovalPanel(request(), "") { decisions.add(it) };root.add(panel)
+            var custom=false
+            val scope=dev.agentgui.toolwindow.ApprovalKeyScope(root) { if(custom) null else panel }
+            fun key(source:java.awt.Component,code:Int)=java.awt.event.KeyEvent(source,java.awt.event.KeyEvent.KEY_PRESSED,0,0,code,java.awt.event.KeyEvent.CHAR_UNDEFINED)
+            assertTrue(scope.dispatchKeyEvent(key(tabs,java.awt.event.KeyEvent.VK_DOWN)))
+            assertEquals(1,panel.list.selectedIndex)
+            assertTrue(scope.dispatchKeyEvent(key(tabs,java.awt.event.KeyEvent.VK_ENTER)))
+            assertEquals(listOf("acceptForSession"),decisions)
+            tabs.putClientProperty("composing",true)
+            assertFalse(scope.dispatchKeyEvent(key(tabs,java.awt.event.KeyEvent.VK_ENTER)))
+            assertEquals(listOf("acceptForSession"),decisions)
+            tabs.putClientProperty("composing",false)
+            custom=true
+            assertFalse(scope.dispatchKeyEvent(key(tabs,java.awt.event.KeyEvent.VK_DOWN)))
+            custom=false
+            assertFalse(scope.dispatchKeyEvent(key(javax.swing.JTextArea(),java.awt.event.KeyEvent.VK_DOWN)))
+            assertEquals(1,panel.list.selectedIndex)
         }
     }
 

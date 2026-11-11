@@ -65,7 +65,16 @@ internal class MathEditorKit : HTMLEditorKit() {
     override fun getViewFactory(): ViewFactory = ViewFactory { element ->
         val src=element.attributes.getAttribute(HTML.Attribute.SRC)?.toString().orEmpty()
         if(element.attributes.getAttribute(javax.swing.text.StyleConstants.NameAttribute)==HTML.Tag.IMG && src.startsWith("agent-math:")) MathView(element,src)
+        else if(element.attributes.getAttribute(javax.swing.text.StyleConstants.NameAttribute)==HTML.Tag.IMG && src in setOf("agent-icon:copy","agent-icon:check")) CopyIconView(element)
         else super.getViewFactory().create(element)
+    }
+    private class CopyIconView(element: Element): javax.swing.text.html.ImageView(element) {
+        override fun getImageURL():java.net.URL?=null
+        override fun getPreferredSpan(axis: Int)=16f
+        override fun getAlignment(axis: Int)=if(axis==Y_AXIS) .8f else super.getAlignment(axis)
+        override fun paint(g: Graphics, allocation: Shape) { val r=allocation.bounds; ChatIcon(element.attributes.getAttribute(HTML.Attribute.SRC).toString().substringAfter(":"),CHAT_MUTED,16).paintIcon(container,g,r.x,r.y) }
+        override fun modelToView(pos: Int, allocation: Shape, bias: Position.Bias): Shape = allocation.bounds.let { Rectangle(if(pos>=endOffset) it.x+it.width else it.x,it.y,0,it.height) }
+        override fun viewToModel(x: Float,y: Float,allocation: Shape,bias: Array<Position.Bias>): Int { bias[0]=Position.Bias.Forward; return if(x<allocation.bounds.centerX) startOffset else endOffset }
     }
     private class MathView(element: Element, source: String): javax.swing.text.html.ImageView(element) {
         private val icon=try {
