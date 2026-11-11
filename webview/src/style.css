@@ -41,4 +41,4 @@ footer{border-top:1px solid #34363b;margin:0 16px;padding:7px 0 10px}footer butt
 .inline-mention{color:#79b8ff;font:inherit;white-space:pre-wrap;cursor:default}
 .model-popover{left:50%;transform:translateX(-50%)}
 
-.attachment{flex-basis:132px;width:132px}
+.attachment{flex-basis:120px;width:120px}

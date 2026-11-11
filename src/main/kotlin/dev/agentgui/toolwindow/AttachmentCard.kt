@@ -19,7 +19,7 @@ internal class AttachmentRow : JPanel(FlowLayout(FlowLayout.LEFT,6,3)), Scrollab
 
 internal class AttachmentCard(name:String, private val preview:BufferedImage?, remove:()->Unit) : JPanel(BorderLayout(6,0)) {
     init {
-        isOpaque=false; preferredSize=Dimension(if(preview==null) 132 else 72,72)
+        isOpaque=false; preferredSize=Dimension(if(preview==null) 120 else 72,72)
         border=EmptyBorder(5,8,5,4); toolTipText=name
         val close=RoundCloseButton("Remove $name",remove)
         if(preview==null) {
