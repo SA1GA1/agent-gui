@@ -66,9 +66,9 @@ class InteractionWidgetsTest {
             input.text="/a @b tail"
             input.insertMention("skill","alpha","/alpha",0,2)
             input.insertMention("plugin","beta","plugin:beta",7,9)
-            assertEquals("/alpha @beta tail",input.text)
+            assertEquals("/alpha /beta tail",input.text)
             input.replaceRange("x",2,4)
-            assertEquals("x @beta tail",input.text)
+            assertEquals("x /beta tail",input.text)
             assertEquals(listOf(InlineMention("plugin","beta","plugin:beta",2,7)),input.mentions())
             assertEquals(java.awt.Color(0x79B8FF),javax.swing.text.StyleConstants.getForeground(input.styledDocument.getCharacterElement(2).attributes))
             assertNotEquals(java.awt.Color(0x79B8FF),javax.swing.text.StyleConstants.getForeground(input.styledDocument.getCharacterElement(1).attributes))

@@ -12,11 +12,18 @@ internal object PromptMentions {
             val start=m["start"]?.jsonPrimitive?.intOrNull ?: return@filter false
             val until=m["end"]?.jsonPrimitive?.intOrNull ?: return@filter false
             val kind=m.string("kind"); val name=m.string("name") ?: return@filter false
-            val label=(if(kind=="skill") "/" else "@")+name.removePrefix("/").removePrefix("@")
-            val matches=kind in setOf("skill","plugin","file") && start>=end && until>start && until<=text.length && name.length<=1024 && text.substring(start,until)==label
+            val label=(if(kind=="file") "@" else "/")+name.removePrefix("/").removePrefix("@")
+            val matches=kind in setOf("skill","plugin","file") && start>=end && until>start && until<=text.length && name.length<=1024 && (text.substring(start,until)==label || kind=="plugin" && text.substring(start,until)=="@"+name)
             if(matches)end=until
             matches
         })
+    }
+    fun migrateDraft(text:String,mentions:JsonArray):String {
+        val chars=text.toCharArray()
+        mentions.forEach { value -> val mention=value.jsonObject
+            if(mention.string("kind")=="plugin") mention["start"]?.jsonPrimitive?.intOrNull?.let { if(it in chars.indices && chars[it]=='@') chars[it]='/' }
+        }
+        return chars.concatToString()
     }
     fun inputs(text:String,value:JsonElement?,skills:JsonArray,plugins:JsonArray):List<JsonObject> = valid(text,value).mapNotNull { v ->
         val m=v.jsonObject;val name=m.string("name").orEmpty()

@@ -23,18 +23,18 @@ describe('Composer',()=>{
     expect(screen.getByRole('dialog',{name:'Models'})).toBeTruthy();
     expect(calls.filter(c=>c.type==='send')).toHaveLength(0);
   });
-  it('offers enabled skills through slash and installed plugins through at',async()=>{
+  it('offers skills and plugins through slash and reserves at for files',async()=>{
     const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
     render(<Composer chat={chat} state={{...state,skills:[{name:'review',description:'Review code',path:'/review',enabled:true}],plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true},{name:'Hidden',id:'hidden',path:'/hidden',description:'',enabled:false}]}} onHistory={()=>{}}/>);
     const user=userEvent.setup();const input=screen.getByRole('textbox');await user.type(input,'/rev');
     expect(screen.getByText('Skills')).toBeTruthy();await user.keyboard('{Enter}');await user.type(input,'Check this{Enter}');
     expect(calls.find(c=>c.type==='send')?.skill).toBe('review');
-    await user.clear(input);await user.type(input,'@');expect(screen.getByText('Plugins')).toBeTruthy();expect(screen.getByText('GitHub')).toBeTruthy();expect(screen.queryByText('Hidden')).toBeNull();
+    await user.clear(input);await user.type(input,'/Git');expect(screen.getByText('Plugins')).toBeTruthy();expect(screen.getByText('/GitHub')).toBeTruthy();expect(screen.queryByText('Hidden')).toBeNull();await user.clear(input);await user.type(input,'@');expect(screen.queryByText('Plugins')).toBeNull();expect(screen.queryByText('/GitHub')).toBeNull();
   });
   it('sends a selected installed plugin identity and keeps files in the composer',async()=>{
     const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
     render(<Composer chat={{...chat,files:[{id:'f',name:'notes.txt',image:false}]}} state={{...state,plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true}]}} onHistory={()=>{}}/>);
-    const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'@Git{Enter}Look at this{Enter}');
+    const user=userEvent.setup();await user.type(screen.getByRole('textbox'),'/Git{Enter}Look at this{Enter}');
     expect(calls.find(c=>c.type==='send')?.plugin).toEqual({name:'GitHub',path:'/github'});
     expect(screen.getByText('notes')).toBeTruthy();
     await user.click(screen.getByRole('button',{name:'Remove notes.txt'}));expect(calls.at(-1)).toEqual({type:'removeAttachment',threadId:'a',id:'f'});
@@ -140,9 +140,9 @@ it('keeps the model picker open when choosing a model',async()=>{
 it('keeps selected mentions inline and removes a whole plugin with one Backspace',async()=>{
  const calls:Record<string,unknown>[]=[];window.agentHost=m=>calls.push(m);
  render(<Composer chat={chat} state={{...state,skills:[{name:'review',description:'Review',path:'/review',enabled:true}],plugins:[{name:'GitHub',id:'github',path:'/github',description:'Repositories',enabled:true}]}} onHistory={()=>{}}/>);
- const user=userEvent.setup();const input=screen.getByRole('textbox');await user.type(input,'/rev{Enter}@Git{Enter}');
- expect(screen.getByText('/review').closest('.inline-mention')).not.toBeNull();expect(screen.getByText('@GitHub').closest('.inline-mention')).not.toBeNull();
- await user.keyboard('{Backspace}');expect(screen.queryByText('@GitHub')).toBeNull();expect(screen.getByText('/review')).toBeTruthy();
+ const user=userEvent.setup();const input=screen.getByRole('textbox');await user.type(input,'/rev{Enter}/Git{Enter}');
+ expect(screen.getByText('/review').closest('.inline-mention')).not.toBeNull();expect(screen.getByText('/GitHub').closest('.inline-mention')).not.toBeNull();
+ await user.keyboard('{Backspace}');expect(screen.queryByText('/GitHub')).toBeNull();expect(screen.getByText('/review')).toBeTruthy();
  await user.type(input,'Check this{Enter}');const sent=calls.find(c=>c.type==='send');expect(sent?.mentions).toEqual([{kind:'skill',name:'review',path:'/review',start:0,end:7}]);
  expect(sent?.text).toBe('/review Check this');
 });

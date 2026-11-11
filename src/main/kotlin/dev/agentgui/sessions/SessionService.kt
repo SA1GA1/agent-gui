@@ -75,6 +75,7 @@ class SessionService(private val project: Project) : Disposable {
         var usage = ContextUsage(null, "unknown")
         var stale = true
         val items = linkedMapOf<String, JsonObject>()
+        var promptTimes=PromptTimes()
         var revealedItems: List<JsonObject>? = null
         val promptTurns = linkedMapOf<String, String>()
         var promptRequest: String? = null
@@ -86,7 +87,8 @@ class SessionService(private val project: Project) : Disposable {
                 val s = value.jsonObject
                 val id = s.string("id") ?: return@forEach
                 sessions[id] = Chat(id, s.string("title") ?: "Chat").apply {
-                    draft = s.string("draft") ?: ""; mentions=PromptMentions.valid(draft,s["mentions"]); model = s.string("model") ?: ""; effort = s.string("effort") ?: ""
+                    draft = s.string("draft") ?: ""; mentions=PromptMentions.valid(draft,s["mentions"]); draft=PromptMentions.migrateDraft(draft,mentions); model = s.string("model") ?: ""; effort = s.string("effort") ?: ""
+                    promptTimes=PromptTimes(s["promptTimes"])
                     open = s["open"]?.jsonPrimitive?.booleanOrNull ?: true
                     files.addAll((s["files"] as? JsonArray).orEmpty().map { it.jsonObject })
                 }
@@ -222,7 +224,7 @@ class SessionService(private val project: Project) : Disposable {
         chat.title = thread.string("name") ?: thread.string("preview")?.take(60) ?: chat.title
         chat.model = data.string("model").orEmpty(); chat.effort = data.string("reasoningEffort").orEmpty()
         chat.items.clear()
-        thread["turns"]?.jsonArray?.forEach { turn -> turn.jsonObject["items"]?.jsonArray?.forEach { item -> chat.items[item.jsonObject.string("id")!!] = item.jsonObject } }
+        thread["turns"]?.jsonArray?.forEach { turn -> turn.jsonObject["items"]?.jsonArray?.forEach { item -> chat.promptTimes.remember(item.jsonObject,turn.jsonObject); chat.items[item.jsonObject.string("id")!!] = item.jsonObject } }
         chat.resumed = true
     }
     private fun send(id: String, message: JsonObject) {
@@ -282,7 +284,7 @@ class SessionService(private val project: Project) : Disposable {
             "account/login/completed", "account/updated" -> { signedIn = runCatching { rpc("account/read", obj { put("refreshToken", false) })["account"].let { it != null && it != JsonNull } }.getOrDefault(false); status = if (signedIn) "Ready" else "Sign-in incomplete" }
             "serverRequest/resolved" -> { p["requestId"]?.jsonPrimitive?.content?.let { approvals.remove(it) } }
             "turn/started" -> { chat?.state = "running"; chat?.turnId = (p["turn"] as? JsonObject)?.string("id") }
-            "item/started", "item/completed" -> { val item = p["item"] as? JsonObject; if (chat != null && item != null) chat.items[item.string("id") ?: return] = item; if (method == "item/completed" && item?.string("type") == "contextCompaction") { chat?.let { it.state = afterCompaction(it.state); it.stale = true }; pump() } }
+            "item/started", "item/completed" -> { val item = p["item"] as? JsonObject; if (chat != null && item != null) { chat.promptTimes.remember(item,receivedAt=System.currentTimeMillis()); chat.items[item.string("id") ?: return] = item; if(item.string("type")=="userMessage") persist() }; if (method == "item/completed" && item?.string("type") == "contextCompaction") { chat?.let { it.state = afterCompaction(it.state); it.stale = true }; pump() } }
             "item/agentMessage/delta" -> if (chat != null) {
                 val itemId = p.string("itemId") ?: return
                 val old = chat.items[itemId]
@@ -470,7 +472,7 @@ class SessionService(private val project: Project) : Disposable {
         } }
     }
     private fun refreshBranch() { branch = BranchService.current(cwd) }
-    private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)) } }).toString() }
+    private fun persist() { store.sessions = JsonArray(sessions.values.map { chat -> obj { put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("files", JsonArray(chat.files)); put("promptTimes",chat.promptTimes.json()) } }).toString() }
     private fun disconnected(reason: String) {
         addError(reason); connected = false; process = null; warmThread = null; warmTurn = null; warmup.finish(owner); status = reason; queue.clear(); approvals.clear(); approvalFlow.clear()
         sessions.values.forEach { it.state = "idle"; it.turnId = null; it.resumed = false; it.stale = true }; publish()
@@ -496,7 +498,7 @@ class SessionService(private val project: Project) : Disposable {
             put("cwd", cwd); put("branch", branch); put("activeId", store.activeId); put("models", models); put("history", history); put("historyCursor", historyCursor); put("skills", extensions); put("plugins", plugins)
             put("sessions", buildJsonArray { sessions.values.forEach { chat -> add(obj {
                 put("id", chat.id); put("title", chat.title); put("draft", chat.draft); put("mentions",chat.mentions); put("open", chat.open); put("model", chat.model); put("effort", chat.effort); put("state", chat.state)
-                put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
+                put("items", JsonArray(if (chat.id == store.activeId) transcriptWindow(chat.revealedItems, chat.items.values.toList()).map(chat.promptTimes::decorate) else emptyList())); put("contextPercent", chat.usage.percent?.let(::JsonPrimitive) ?: JsonNull); put("contextLevel", chat.usage.level); put("contextStale", chat.stale)
                 put("files", buildJsonArray { chat.files.forEach { f -> add(JsonObject(f + ("preview" to (runCatching { if (chat.id == store.activeId) attachments.preview(f) else null }.getOrNull()?.let(::JsonPrimitive) ?: JsonNull)))) } })
                 put("approvals", JsonArray(approvals.values.filter { it["params"]?.jsonObject?.string("threadId") == chat.id }))
             }) } })

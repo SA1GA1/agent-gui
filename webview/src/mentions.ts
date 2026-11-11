@@ -1,6 +1,6 @@
 export type Mention={kind:'skill'|'plugin'|'file';name:string;path:string;start:number;end:number};
 export type Prompt={text:string;mentions:Mention[]};
-export const mentionLabel=(m:Pick<Mention,'kind'|'name'>)=>(m.kind==='skill'?'/':'@')+m.name.replace(/^[/@]/,'');
+export const mentionLabel=(m:Pick<Mention,'kind'|'name'>)=>(m.kind==='file'?'@':'/')+m.name.replace(/^[/@]/,'');
 export function validMentions(text:string,mentions:readonly Mention[]):Mention[]{
  let last=0;return [...mentions].sort((a,b)=>a.start-b.start).filter(m=>{
   if(!['skill','plugin','file'].includes(m.kind)||!Number.isInteger(m.start)||!Number.isInteger(m.end)||m.start<last||m.start<0||m.end>text.length||m.end<=m.start||text.slice(m.start,m.end)!==mentionLabel(m))return false;

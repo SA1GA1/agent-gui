@@ -39,10 +39,11 @@ export function Composer({chat,state,onHistory}:{chat:Chat;state:State;onHistory
   const term=match?.[2]||'',tokenStart=match?caret-term.length-1:caret;
   const menu:Choice[]=custom||dismissed?[]:slash?[
     ...commands.filter(([c])=>c.startsWith('/'+term)).map(([value,label])=>({value,label,group:'Commands'})),
-    ...state.skills.filter(s=>s.enabled!==false&&s.name.toLowerCase().includes(term.toLowerCase())).map(s=>({value:s.name,label:s.description,group:'Skills',path:s.path}))
+    ...state.skills.filter(s=>s.enabled!==false&&s.name.toLowerCase().includes(term.toLowerCase())).map(s=>({value:s.name,label:s.description,group:'Skills',path:s.path})),
+    ...(state.plugins||[]).filter(p=>p.enabled!==false&&p.name.toLowerCase().includes(term.toLowerCase())).map(p=>({value:p.name,label:p.description,group:'Plugins',path:p.path}))
   ]:at?[
     ...files.map(value=>({value,label:'',group:'Files'})),
-    ...(state.plugins||[]).filter(p=>p.enabled!==false&&p.name.toLowerCase().includes(term.toLowerCase())).map(p=>({value:p.name,label:p.description,group:'Plugins',path:p.path}))
+
   ]:[];
   useEffect(()=>{if(!replyDrafts.current.get(requestKey)?.editing){setText(chat.draft);setMentions(chat.mentions||[]);setCaret(chat.draft.length);}locked.current=false;},[chat.id,chat.draft,chat.state,custom]);
   useEffect(()=>{setMentions(chat.mentions||[]);setFiles([]);setModelOpen(false);},[chat.id]);
@@ -111,9 +112,9 @@ export function Composer({chat,state,onHistory}:{chat:Chat;state:State;onHistory
         }}>{index+1}. {label}</button>)}</div>
       </section>}
       {!custom&&!!chat.files.length&&<div className="attachments" role="group" aria-label="Attachments">{chat.files.map(file=><div className={`attachment${file.preview?' image-attachment':''}`} key={file.id}>{file.preview&&<img src={file.preview} alt={file.name}/>}{!file.preview&&<svg className="document-icon" width="23" height="27" viewBox="0 0 24 28" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M5 2h9l6 6v18H5zM14 2v7h6M8 15h9M8 19h7"/></svg>}<span className="attachment-caption"><span>{file.name.lastIndexOf('.')>0?file.name.slice(0,file.name.lastIndexOf('.')):file.name}</span><small>{file.name.lastIndexOf('.')>0?file.name.split('.').pop()?.toUpperCase()||'FILE':file.image?'IMAGE':'FILE'}</small></span><button className="chip-close" aria-label={`Remove ${file.name}`} onClick={()=>host('removeAttachment',{threadId:chat.id,id:file.id})}>×</button></div>)}</div>}
-      {!!menu.length&&<div className="suggestions" role="listbox" aria-label={slash?'Commands and skills':'Files and plugins'}>{menu.map((item,i)=><div key={`${item.group}:${item.path||item.value}`}>
+      {!!menu.length&&<div className="suggestions" role="listbox" aria-label={slash?'Commands, skills and plugins':'Files'}>{menu.map((item,i)=><div key={`${item.group}:${item.path||item.value}`}>
         {(i===0||menu[i-1].group!==item.group)&&<div className="menu-label">{item.group}</div>}
-        <button role="option" aria-selected={selection===i} className={selection===i?'selected':''} onMouseDown={e=>{e.preventDefault();pick(item);}}><strong>{item.group==='Skills'?'/':''}{item.value}</strong><span>{item.label}</span></button>
+        <button role="option" aria-selected={selection===i} className={selection===i?'selected':''} onMouseDown={e=>{e.preventDefault();pick(item);}}><strong>{item.group==='Skills'||item.group==='Plugins'?'/':''}{item.value}</strong><span>{item.label}</span></button>
       </div>)}</div>}
       <RichPrompt key={`${chat.id}:${custom?requestKey:"draft"}`} ref={textarea} text={text} caret={caret} mentions={custom?[]:mentions} disabled={!state.connected||!state.signedIn} onCaret={setCaret} onEdit={(p,c)=>draft(p.text,p.mentions,c)} onScroll={field=>{field.dataset.scrolling='true';if(scrollIdle.current)clearTimeout(scrollIdle.current);scrollIdle.current=setTimeout(()=>{delete field.dataset.scrolling;},900);}} onPasteFiles={e=>{const pasted=Array.from(e.clipboardData.files);if(pasted.length){e.preventDefault();readFiles(pasted);return true;}return false;}} onKeyDown={e=>{
         if(e.nativeEvent.isComposing||e.keyCode===229)return;

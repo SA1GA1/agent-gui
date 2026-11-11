@@ -76,7 +76,7 @@ internal class ComposerTextArea : JTextPane() {
     }
     fun isMentionAt(caret: Int)=mentions().any { caret>it.start && caret<=it.end }
     fun insertMention(kind: String,name: String,path: String?,start: Int,end: Int) {
-        val label=(if(kind=="skill") "/" else "@")+name.removePrefix("/").removePrefix("@")
+        val label=(if(kind=="file") "@" else "/")+name.removePrefix("/").removePrefix("@")
         pendingReference=Reference(kind,name,path)
         try { replaceRange(label,start,end) } finally { pendingReference=null }
         caretPosition=(start+label.length).coerceAtMost(document.length)
@@ -88,7 +88,7 @@ internal class ComposerTextArea : JTextPane() {
             this.text=text
             for(mention in mentions.sortedBy { it.start }) {
                 if(mention.kind !in setOf("skill","plugin","file") || mention.start<0 || mention.end>text.length || mention.end<=mention.start) continue
-                val expected=(if(mention.kind=="skill") "/" else "@")+mention.name.removePrefix("/").removePrefix("@")
+                val expected=(if(mention.kind=="file") "@" else "/")+mention.name.removePrefix("/").removePrefix("@")
                 if(text.substring(mention.start,mention.end)!=expected) continue
                 val attrs=SimpleAttributeSet().apply { addAttribute(referenceKey,Reference(mention.kind,mention.name,mention.path)); StyleConstants.setForeground(this,Color(0x79B8FF)) }
                 styledDocument.setCharacterAttributes(mention.start,mention.end-mention.start,attrs,true)
@@ -105,7 +105,7 @@ internal class ComposerTextArea : JTextPane() {
             try {
                 copy.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
                 copy.color=CHAT_MUTED; copy.font=font
-                copy.drawString("/ commands and skills · @ files and plugins",insets.left,insets.top+getFontMetrics(font).ascent)
+                copy.drawString("/ commands, skills and plugins · @ files",insets.left,insets.top+getFontMetrics(font).ascent)
             } finally { copy.dispose() }
         }
     }
