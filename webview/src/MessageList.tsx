@@ -4,14 +4,35 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import {normalizeMath} from './mathNormalizer';
-import {useEffect,useRef} from 'react';
+import {useEffect,useRef,useState,type ReactNode} from 'react';
 import {Virtuoso,type VirtuosoHandle} from 'react-virtuoso';
 import {host, type Item} from './types';
+function CopyButton({text,label,className}:{text:()=>string|undefined;label:string;className?:string}) {
+  const [copied,setCopied]=useState(false),timer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),alive=useRef(true);
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;clearTimeout(timer.current);};},[]);
+  async function copy(){
+    const value=text();if(value==null)return;
+    try {
+      await navigator.clipboard.writeText(value);
+      if(!alive.current)return;
+      setCopied(true);clearTimeout(timer.current);timer.current=setTimeout(()=>setCopied(false),1600);
+    } catch { /* Keep copying available when clipboard access is denied. */ }
+  }
+  return <button className={className} onMouseDown={e=>e.preventDefault()} onClick={copy} aria-label={copied?'Copied':label} title={copied?'Copied':label} aria-live="polite"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">{copied?<path d="m4 10 4 4 8-9"/>:<><path d="M7 5V4a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1"/><rect x="2" y="6" width="12" height="12" rx="2"/></>}</svg></button>;
+}
+export function CodeBlock({children}:{children?:ReactNode}) {
+  const block=useRef<HTMLDivElement>(null);
+  return <div className="code-block" ref={block}><CopyButton className="copy" label="Copy code" text={()=>block.current?.querySelector('code')?.textContent ?? undefined}/><pre>{children}</pre></div>;
+}
+export function UserMessage({item}:{item:Item}) {
+  const text=item.content?.map(c=>c.type==='text'?c.text:'[Attachment]').join('\n') ?? '';
+  return <article className="message user"><div className="user-text">{item.content?.map((c,i)=><span key={i}>{c.type==='text'?c.text:c.type==='localImage'||c.type==='image'?'▧ Image':c.type}</span>)}</div><div className="message-actions">{item.sentAt&&<time dateTime={new Date(item.sentAt).toISOString()}>{new Date(item.sentAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})}</time>}<CopyButton label="Copy message" text={()=>text}/></div></article>;
+}
 function Message({item}:{item:Item}) {
-  if (item.type === 'userMessage') return <article className="message user"><div className="role">You</div><div className="user-text">{item.content?.map((c,i)=> <span key={i}>{c.type === 'text' ? c.text : c.type === 'localImage' || c.type === 'image' ? '▧ Image' : c.type}</span>)}</div></article>;
+  if (item.type === 'userMessage') return <UserMessage item={item}/>;
   if (item.type === 'agentMessage' || item.type === 'plan') return <article className="message assistant"><div className="role">{item.type === 'plan' ? 'Plan' : 'Codex'}</div><ReactMarkdown remarkPlugins={[remarkGfm,remarkMath]} rehypePlugins={[[rehypeKatex,{trust:false,strict:'ignore',throwOnError:false,maxExpand:200,maxSize:20}]]} components={{
     a:({href,children})=><a href={href} onClick={e=>{e.preventDefault(); if (href) host('openUrl',{url:href});}}>{children}</a>,
-    pre:({children})=><div className="code-block"><button className="copy" onClick={e=>{const text=e.currentTarget.parentElement?.querySelector('code')?.textContent; if (text) navigator.clipboard.writeText(text).catch(()=>{});}}>Copy</button><pre>{children}</pre></div>,
+    pre:CodeBlock,
     img:()=> <span>[Response image]</span>
   }}>{normalizeMath(item.text || '')}</ReactMarkdown></article>;
   if (item.type === 'reasoning' || item.type === 'hookPrompt') return null;

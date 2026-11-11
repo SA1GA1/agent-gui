@@ -42,3 +42,18 @@ footer{border-top:1px solid #34363b;margin:0 16px;padding:7px 0 10px}footer butt
 .model-popover{left:50%;transform:translateX(-50%)}
 
 .attachment{flex-basis:120px;width:120px}
+
+/* Quiet controls with room to read and an unclipped circular progress ring. */
+footer{padding:8px 0 8px;min-height:36px}
+.tab .tab-close{visibility:hidden}.tab.active .tab-close,.tab:hover .tab-close,.tab:focus-within .tab-close{visibility:visible}
+.send.stop{position:relative}.send.stop:after{content:'';position:absolute;inset:1px;border:1.5px solid transparent;border-top-color:#b9bcc3;border-right-color:#b9bcc3;border-radius:50%;animation:send-ring 1.2s linear infinite;pointer-events:none}
+@keyframes send-ring{to{transform:rotate(360deg)}}
+.message p{margin:8px 0}.code-block{margin-top:10px;margin-bottom:10px}.message pre{line-height:1.5}
+@media(prefers-reduced-motion:reduce){.send.stop:after{animation:none}}
+
+.code-block .copy{cursor:pointer;user-select:none;transition:background .12s,transform .12s}
+.code-block .copy:active{transform:scale(.96);background:#43464d}
+
+.code-block .copy{display:inline-flex;align-items:center;gap:5px}
+
+.message.user{position:relative;margin-bottom:27px}.message-actions{position:absolute;top:100%;right:4px;height:23px;display:flex;gap:8px;align-items:center;color:var(--muted);font-size:11px;opacity:0;transition:opacity .12s}.message-actions button{width:22px;height:21px;padding:2px}.message.user:hover .message-actions,.message.user:focus-within .message-actions{opacity:1}
